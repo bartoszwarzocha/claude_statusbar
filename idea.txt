@@ -1,0 +1,14 @@
+Stworzyć dodatek do VS Code, który wyświetli statystyki Claude Code w pasku statusu w VS Code.
+Oczekiwany format:
+
+Reset: 00::00:00 | C: 12.56$/35.00$ | T: 65489/88000 | M: 255/450
+
+Gdzie, 'Reset' to czas do resetu tokenów odliczany wstecz, C: bieżący koszt, T: wykorzystanie tokenów, M: wykorzystanie wiadomości.
+Po najechaniu kursorem powinno pojawić się małeokienko popup z bardziej szczegółową informacją w postaci pasków postępu wraz z wartościami procentowymi, a także wartościami określającymi zużycie tokenów i kosztów na minutę.
+Dodatek powinien zawierać tylko dwa parametry w konfiguracji: 1) plan Claude code, 2) częstotliwość odświeżania
+
+Interfejs według: https://github.com/yahyashareef48/claude-usage-monitor (lokalnie w: e:\AI\claude-usage-monitor\ - /mnt/e/…)
+Logika według: https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor
+
+Nacisk na prawidłowe obliczanie wartości, jak w Claude Code Usage Monitor, a GUI zgodnie z Claude Usage Monitor (ten dodatek oblicza wartości źle!!!).
+

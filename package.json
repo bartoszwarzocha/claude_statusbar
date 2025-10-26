@@ -1,0 +1,108 @@
+{
+  "name": "claude-statusbar",
+  "displayName": "Claude Code Status Bar Monitor",
+  "description": "Real-time monitoring of Claude Code usage in VS Code status bar - tokens, costs, and messages",
+  "version": "0.1.0",
+  "publisher": "claude-statusbar",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bartoszwarzocha/claude_statusbar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bartoszwarzocha/claude_statusbar/issues"
+  },
+  "homepage": "https://github.com/bartoszwarzocha/claude_statusbar#readme",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claude-statusbar.showDetails",
+        "title": "Claude: Show Usage Details"
+      },
+      {
+        "command": "claude-statusbar.setPlanPro",
+        "title": "Claude: Set Plan to Pro"
+      },
+      {
+        "command": "claude-statusbar.setPlanMax5",
+        "title": "Claude: Set Plan to Max5"
+      },
+      {
+        "command": "claude-statusbar.setPlanMax20",
+        "title": "Claude: Set Plan to Max20"
+      },
+      {
+        "command": "claude-statusbar.setPlanCustom",
+        "title": "Claude: Set Plan to Custom"
+      },
+      {
+        "command": "claude-statusbar.refresh",
+        "title": "Claude: Refresh Usage Stats"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Status Bar",
+      "properties": {
+        "claudeStatusBar.plan": {
+          "type": "string",
+          "enum": ["pro", "max5", "max20", "custom"],
+          "default": "max5",
+          "description": "Claude Code subscription plan"
+        },
+        "claudeStatusBar.customTokenLimit": {
+          "type": "number",
+          "default": 44000,
+          "minimum": 1000,
+          "description": "Custom token limit (only used when plan is set to 'custom')"
+        },
+        "claudeStatusBar.refreshInterval": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Refresh interval in seconds (1-60)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.8",
+    "@types/vscode": "^1.104.0",
+    "@typescript-eslint/eslint-plugin": "^8.45.0",
+    "@typescript-eslint/parser": "^8.45.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.10",
+    "eslint": "^9.36.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3"
+  }
+}

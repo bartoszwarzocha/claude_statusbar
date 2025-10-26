@@ -1,0 +1,34 @@
+# Source files
+src/**
+.vscode/**
+.vscode-test/**
+
+# Build files
+node_modules/**
+out/**
+*.vsix
+
+# Development files
+.gitignore
+.eslintrc.json
+eslint.config.js
+tsconfig.json
+esbuild.js
+idea.txt
+.claude/**
+
+# Documentation (keep only README.md)
+CLAUDE.md
+
+# Tests
+**/*.test.ts
+**/*.spec.ts
+
+# Git files
+.git
+.gitattributes
+
+# Misc
+npm-debug.log*
+.DS_Store
+*.log
