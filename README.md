@@ -1,6 +1,8 @@
-# Claude Code Status Bar Monitor
-
-A VS Code extension that displays real-time Claude Code usage statistics directly in your status bar.
+<div align="center">
+  <img src="resources/icon.png" alt="Claude Status Bar Icon" width="128" height="128">
+  <h1>Claude Code Status Bar Monitor</h1>
+  <p>A VS Code extension that displays real-time Claude Code usage statistics directly in your status bar.</p>
+</div>
 
 ## Features
 
@@ -157,10 +159,24 @@ vsce package
 npm run test
 ```
 
-## Credits
+## Credits & Inspiration
 
-- **Architecture inspiration**: [yahyashareef48/claude-usage-monitor](https://github.com/yahyashareef48/claude-usage-monitor)
-- **Calculation logic**: [Maciek-roboblog/Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor)
+This project was inspired by and built upon the excellent work of:
+
+### GUI & Architecture
+- **[yahyashareef48/claude-usage-monitor](https://github.com/yahyashareef48/claude-usage-monitor)** - Visual design and VS Code extension architecture
+  - Status bar layout and styling
+  - Webview panel implementation
+  - Real-time file watching approach
+
+### Calculation Logic & Accuracy
+- **[Maciek-roboblog/Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor)** - Precise usage calculations
+  - Token counting methodology (excluding cache tokens from limits)
+  - Cost calculation formulas with model-specific pricing
+  - 5-hour rolling session window logic
+  - P90-based custom plan analysis
+
+**Note:** This extension combines the best of both projects - accurate calculations from Maciek's monitor with the polished GUI from Yahya's extension.
 
 ## License
 
