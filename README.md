@@ -33,13 +33,22 @@ Simple configuration with just two settings:
 
 ## Installation
 
-1. Install from VS Code Marketplace (coming soon)
-2. Or install manually:
-   ```bash
-   npm install
-   npm run package
-   code --install-extension claude-statusbar-0.1.0.vsix
-   ```
+### Via VS Code Extension Manager
+
+1. Open VS Code
+2. Go to Extensions (`Ctrl+Shift+X` / `Cmd+Shift+X`)
+3. Search for "Claude Code Status Bar Monitor"
+4. Click **Install**
+
+Or visit the [VS Code Marketplace page](https://marketplace.visualstudio.com/items?itemName=bartosz-warzocha.claude-statusbar)
+
+### Manual Installation
+
+```bash
+npm install
+npm run package
+code --install-extension claude-statusbar-0.1.0.vsix
+```
 
 ## Usage
 
