@@ -30,6 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
   let currentSession: SessionMetrics | null = null;
   let isRefreshing = false;
   let sessionJustEnded = false;
+  let refreshingStartTime: number | null = null;
 
   statusBar.showInitializing();
 
@@ -119,6 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
         currentSession = metrics;
         isRefreshing = false;
         sessionJustEnded = false;
+        refreshingStartTime = null;
         statusBar.update(currentSession, planConfig);
         statusBar.updateTooltip(currentSession, planConfig);
 
@@ -129,21 +131,28 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         outputChannel.appendLine('WARNING: No active sessions');
 
-        // Show warning if session just ended and no new session detected
-        if (sessionJustEnded) {
-          const config = vscode.workspace.getConfiguration('claudeStatusBar');
-          const notifyNoNewSession = config.get<boolean>(
-            'notifications.noNewSessionWarning',
-            true
-          );
+        // Show warning if session just ended and no new session detected after 30 seconds
+        if (sessionJustEnded && refreshingStartTime) {
+          const elapsedTime = Date.now() - refreshingStartTime;
 
-          if (notifyNoNewSession) {
-            vscode.window.showWarningMessage(
-              '⚠️ No new session detected\nClaude Code appears to be inactive. Start a new conversation to begin tracking.',
-              'OK'
+          if (elapsedTime >= 30000) {
+            // 30 seconds passed without detecting new session
+            const config = vscode.workspace.getConfiguration('claudeStatusBar');
+            const notifyNoNewSession = config.get<boolean>(
+              'notifications.noNewSessionWarning',
+              true
             );
+
+            if (notifyNoNewSession) {
+              vscode.window.showWarningMessage(
+                '⚠️ No new session detected\nClaude Code appears to be inactive. Start a new conversation to begin tracking.',
+                'OK'
+              );
+            }
+            sessionJustEnded = false;
+            refreshingStartTime = null;
           }
-          sessionJustEnded = false;
+          // If < 30s, keep waiting (will check again in next updateMetrics cycle)
         }
 
         currentSession = null;
@@ -186,6 +195,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (timeRemaining === 0 && !isRefreshing) {
         isRefreshing = true;
         sessionJustEnded = true;
+        refreshingStartTime = Date.now(); // Start 30s countdown
         statusBar.showRefreshing();
         if (popupPanel.isOpen()) {
           popupPanel.showRefreshing();
