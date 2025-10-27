@@ -2,7 +2,7 @@
   "name": "claude-statusbar",
   "displayName": "Claude Code Status Bar Monitor",
   "description": "Real-time monitoring of Claude Code usage in VS Code status bar - tokens, costs, and messages",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "bartosz-warzocha",
   "icon": "resources/icon.png",
   "repository": {
