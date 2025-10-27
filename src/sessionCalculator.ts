@@ -132,16 +132,17 @@ export function calculateSessionMetrics(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  // Step 3: Filter to last 192 hours (8 days) like Python does
-  const HOURS_BACK = 192;
-  const cutoffTime = new Date(now.getTime() - HOURS_BACK * 60 * 60 * 1000);
+  // Step 3: Filter to today's messages only (from midnight of current day)
+  // This ensures that sessions don't include messages from previous days
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0); // Set to midnight of today
 
   const recentMessages = sortedMessages.filter((msg) => {
     const msgTime = new Date(msg.timestamp);
-    return msgTime >= cutoffTime;
+    return msgTime >= todayStart;
   });
 
-  outputChannel?.appendLine(`Sorted: ${sortedMessages.length}, Recent messages (last ${HOURS_BACK}h): ${recentMessages.length}`);
+  outputChannel?.appendLine(`Sorted: ${sortedMessages.length}, Today's messages (since ${todayStart.toLocaleTimeString()}): ${recentMessages.length}`);
 
   if (recentMessages.length === 0) {
     return null; // No recent messages
