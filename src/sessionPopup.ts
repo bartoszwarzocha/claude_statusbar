@@ -604,8 +604,8 @@ export class SessionPopupPanel {
 
     <div id="no-session-message" style="display: none; text-align: center; padding: 50px;">
         <h2>No Active Session</h2>
-        <p style="color: var(--vscode-descriptionForeground);">No Claude Code session found for today</p>
-        <p style="color: var(--vscode-descriptionForeground); margin-top: 10px;">Start using Claude Code to begin tracking</p>
+        <p style="color: var(--vscode-descriptionForeground);">No active Claude Code session detected</p>
+        <p style="color: var(--vscode-descriptionForeground); margin-top: 10px;">Start a conversation with Claude to activate a new tracking session</p>
     </div>
 
     <div id="main-content">
