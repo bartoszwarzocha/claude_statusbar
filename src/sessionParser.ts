@@ -5,7 +5,7 @@ import { ClaudeMessage, MessageUsage } from './types';
 /**
  * Parse a Claude JSONL session file and extract messages with usage data
  */
-export async function parseSessionFile(filePath: string): Promise<ClaudeMessage[]> {
+export async function parseSessionFile(filePath: string, projectName?: string): Promise<ClaudeMessage[]> {
   const messages: ClaudeMessage[] = [];
 
   try {
@@ -45,12 +45,24 @@ export async function parseSessionFile(filePath: string): Promise<ClaudeMessage[
           continue;
         }
 
+        // Extract model from various possible locations (matching Python's DataConverter.extract_model_name)
+        const modelCandidates = [
+          msg.model,              // message.model
+          parsed.model,           // root.model
+          parsed.Model,           // root.Model (capitalized)
+          msg.usage?.model,       // usage.model
+          parsed.request?.model,  // request.model
+        ];
+
+        const model = modelCandidates.find(m => m && typeof m === 'string') || undefined;
+
         const message: ClaudeMessage = {
           id: msg.id || parsed.uuid || '',
           requestId: parsed.request_id || parsed.requestId || 'unknown',
           timestamp: parsed.timestamp || new Date().toISOString(),
           role: msg.role || 'user',
-          model: msg.model || undefined,
+          model: model,
+          projectName: projectName,
           usage: {
             input_tokens: msg.usage.input_tokens || 0,
             cache_creation_input_tokens: msg.usage.cache_creation_input_tokens || 0,

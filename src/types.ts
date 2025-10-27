@@ -21,6 +21,7 @@ export interface ClaudeMessage {
   timestamp: string; // ISO 8601 format
   role: 'user' | 'assistant';
   model?: string; // Model identifier (e.g., "claude-sonnet-4-20250514")
+  projectName?: string; // Project name from directory structure
   usage?: MessageUsage;
 }
 
@@ -58,6 +59,16 @@ export interface SessionMetrics {
   costBurnRate: number; // Cost per minute
   messageBurnRate: number; // Messages per minute
   estimatedTimeToLimit?: number; // Milliseconds until limit hit (if applicable)
+
+  // Token breakdown by model tier
+  modelBreakdown: {
+    opus: number;
+    sonnet: number;
+    haiku: number;
+  };
+
+  // Token breakdown by project
+  projectBreakdown: Record<string, number>; // projectName -> token count
 }
 
 /**

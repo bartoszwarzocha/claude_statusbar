@@ -26,34 +26,42 @@ export const MODEL_PRICING: Record<ModelTier, ModelPricing> = {
 };
 
 /**
- * Model name to tier mapping
- */
-const MODEL_TIER_MAP: Record<string, ModelTier> = {
-  // Opus models
-  'claude-3-opus': 'opus',
-  'claude-opus-4-20250514': 'opus',
-
-  // Sonnet models
-  'claude-3-sonnet': 'sonnet',
-  'claude-3-5-sonnet': 'sonnet',
-  'claude-sonnet-4-20250514': 'sonnet',
-  'claude-sonnet-4-5-20250929': 'sonnet',
-
-  // Haiku models
-  'claude-3-haiku': 'sonnet',
-  'claude-3-5-haiku': 'haiku',
-};
-
-/**
- * Determine model tier from model name
+ * Determine model tier from model name using pattern matching
+ * This dynamically recognizes opus/sonnet/haiku regardless of version number
+ *
+ * Examples:
+ * - "claude-3-opus" → opus
+ * - "claude-opus-4-20250514" → opus
+ * - "claude-opus-4-1-20250805" → opus
+ * - "claude-3-5-sonnet" → sonnet
+ * - "claude-sonnet-4-5-20250929" → sonnet
+ * - "claude-3-haiku" → haiku
  */
 export function getModelTier(modelName: string | undefined): ModelTier {
   if (!modelName) {
     return 'sonnet'; // Default to Sonnet pricing
   }
 
-  const tier = MODEL_TIER_MAP[modelName];
-  return tier || 'sonnet'; // Default to Sonnet if unknown
+  // Convert to lowercase for case-insensitive matching
+  const nameLower = modelName.toLowerCase();
+
+  // Check for tier keywords in the model name
+  if (nameLower.includes('opus')) {
+    return 'opus';
+  }
+
+  if (nameLower.includes('haiku')) {
+    return 'haiku';
+  }
+
+  if (nameLower.includes('sonnet')) {
+    return 'sonnet';
+  }
+
+  // Log unknown models for debugging
+  console.warn(`[Claude Status Bar] Unknown model tier for: "${modelName}" - defaulting to sonnet`);
+
+  return 'sonnet'; // Default to Sonnet if pattern not recognized
 }
 
 /**

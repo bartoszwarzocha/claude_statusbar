@@ -98,6 +98,16 @@ export class StatusBarManager {
   }
 
   /**
+   * Show refreshing state
+   */
+  public showRefreshing() {
+    this.statusBarItem.text = '$(claude-icon) Refreshing...';
+    this.statusBarItem.tooltip = 'Checking for new session...';
+    this.statusBarItem.backgroundColor = undefined;
+    this.statusBarItem.color = undefined;
+  }
+
+  /**
    * Show error state
    */
   public showError(message: string) {

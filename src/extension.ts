@@ -28,6 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // State
   let currentSession: SessionMetrics | null = null;
+  let isRefreshing = false;
 
   statusBar.showInitializing();
 
@@ -83,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
           const filePath = path.join(projectPath, file);
 
           try {
-            const messages = await parseSessionFile(filePath);
+            const messages = await parseSessionFile(filePath, projectDir);
             allMessages.push(...messages);
           } catch (err) {
             // Skip files that can't be parsed
@@ -115,6 +116,7 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`  Messages: ${metrics.messageCount} / ${metrics.messageLimit} (${((metrics.messageCount / metrics.messageLimit) * 100).toFixed(1)}%)`);
 
         currentSession = metrics;
+        isRefreshing = false;
         statusBar.update(currentSession, planConfig);
         statusBar.updateTooltip(currentSession, planConfig);
 
@@ -125,7 +127,13 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         outputChannel.appendLine('WARNING: No active sessions');
         currentSession = null;
+        isRefreshing = false;
         statusBar.update(null, planConfig);
+
+        // Update popup panel if open
+        if (popupPanel.isOpen()) {
+          popupPanel.showNoSession();
+        }
       }
     } catch (error) {
       outputChannel.appendLine(`ERROR: ${error}`);
@@ -148,15 +156,28 @@ export function activate(context: vscode.ExtensionContext) {
     if (currentSession && currentSession.isActive) {
       // Recalculate timeRemaining dynamically for live countdown
       const now = new Date();
+      const timeRemaining = Math.max(0, currentSession.sessionEndTime.getTime() - now.getTime());
       const updatedSession = {
         ...currentSession,
-        timeRemaining: Math.max(0, currentSession.sessionEndTime.getTime() - now.getTime()),
+        timeRemaining,
       };
-      statusBar.update(updatedSession, planConfig);
 
-      // Also update the popup panel if it's open
-      if (popupPanel.isOpen()) {
-        popupPanel.update(updatedSession, planConfig);
+      // If timer reached 0 and we're not already refreshing, trigger immediate refresh
+      if (timeRemaining === 0 && !isRefreshing) {
+        isRefreshing = true;
+        statusBar.showRefreshing();
+        if (popupPanel.isOpen()) {
+          popupPanel.showRefreshing();
+        }
+        // Trigger immediate metrics update
+        setTimeout(() => updateMetrics(), 100);
+      } else {
+        statusBar.update(updatedSession, planConfig);
+
+        // Also update the popup panel if it's open
+        if (popupPanel.isOpen()) {
+          popupPanel.update(updatedSession, planConfig);
+        }
       }
     } else if (currentSession) {
       statusBar.update(currentSession, planConfig);

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ClaudeMessage, SessionMetrics, PlanConfig } from './types';
 import { calculateLimitTokens } from './sessionParser';
-import { calculateMessageCost } from './pricing';
+import { calculateMessageCost, getModelTier } from './pricing';
 
 const SESSION_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours in milliseconds
 const BURN_RATE_WINDOW_MS = 10 * 60 * 1000; // Last 10 minutes for burn rate
@@ -205,6 +205,16 @@ export function calculateSessionMetrics(
   let totalCost = 0;
   let messageCount = 0;
 
+  // Breakdown by model tier
+  const modelBreakdown = {
+    opus: 0,
+    sonnet: 0,
+    haiku: 0,
+  };
+
+  // Breakdown by project
+  const projectBreakdown: Record<string, number> = {};
+
   const seenIds = new Set<string>();
 
   outputChannel?.appendLine('');
@@ -231,10 +241,19 @@ export function calculateSessionMetrics(
       const msgCost = calculateMessageCost(message.usage, message.model);
       totalCost += msgCost;
 
+      // Aggregate by model tier
+      const modelTier = getModelTier(message.model);
+      modelBreakdown[modelTier] += msgTokens;
+
+      // Aggregate by project
+      if (message.projectName) {
+        projectBreakdown[message.projectName] = (projectBreakdown[message.projectName] || 0) + msgTokens;
+      }
+
       outputChannel?.appendLine(
         `  Msg ${messageCount}: ${message.id.substring(0, 8)}... | ` +
         `${msgTokens.toLocaleString()} tokens (in:${message.usage.input_tokens}, out:${message.usage.output_tokens}) | ` +
-        `$${msgCost.toFixed(4)}`
+        `$${msgCost.toFixed(4)} | Model: ${modelTier} | Project: ${message.projectName || 'unknown'}`
       );
     }
   }
@@ -270,6 +289,18 @@ export function calculateSessionMetrics(
   outputChannel?.appendLine(`  TOTAL (toward limit): ${totalTokens.toLocaleString()} = ${inputTokens.toLocaleString()} + ${outputTokens.toLocaleString()}`);
   outputChannel?.appendLine(`  Cost: $${totalCost.toFixed(2)}`);
   outputChannel?.appendLine(`  Time remaining: ${Math.floor(timeRemaining / 60000)} minutes`);
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine('MODEL BREAKDOWN:');
+  outputChannel?.appendLine(`  Opus: ${modelBreakdown.opus.toLocaleString()} tokens (${((modelBreakdown.opus / totalTokens) * 100).toFixed(1)}%)`);
+  outputChannel?.appendLine(`  Sonnet: ${modelBreakdown.sonnet.toLocaleString()} tokens (${((modelBreakdown.sonnet / totalTokens) * 100).toFixed(1)}%)`);
+  outputChannel?.appendLine(`  Haiku: ${modelBreakdown.haiku.toLocaleString()} tokens (${((modelBreakdown.haiku / totalTokens) * 100).toFixed(1)}%)`);
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine('PROJECT BREAKDOWN:');
+  Object.entries(projectBreakdown)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([project, tokens]) => {
+      outputChannel?.appendLine(`  ${project}: ${tokens.toLocaleString()} tokens (${((tokens / totalTokens) * 100).toFixed(1)}%)`);
+    });
 
   return {
     totalTokens,
@@ -290,6 +321,8 @@ export function calculateSessionMetrics(
     tokenBurnRate,
     costBurnRate,
     messageBurnRate,
+    modelBreakdown,
+    projectBreakdown,
   };
 }
 

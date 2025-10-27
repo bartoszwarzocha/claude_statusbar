@@ -73,6 +73,28 @@ export class SessionPopupPanel {
   }
 
   /**
+   * Show refreshing state
+   */
+  public showRefreshing() {
+    if (this.panel) {
+      this.panel.webview.postMessage({
+        type: 'refreshing',
+      });
+    }
+  }
+
+  /**
+   * Show no session state
+   */
+  public showNoSession() {
+    if (this.panel) {
+      this.panel.webview.postMessage({
+        type: 'no-session',
+      });
+    }
+  }
+
+  /**
    * Generate HTML content for the webview
    */
   private getWebviewContent(session: SessionMetrics, planConfig: PlanConfig): string {
@@ -113,12 +135,23 @@ export class SessionPopupPanel {
         }
         h2 {
             font-size: 18px;
-            margin-top: 30px;
-            margin-bottom: 15px;
+            margin: 0;
             color: var(--vscode-textLink-foreground);
         }
+        /* Odstęp między sekcjami */
+        .section-header {
+            margin-top: 5px;
+        }
+        /* Zachowaj odstęp pierwszej sekcji od timera */
+        .session-timer + .section-header {
+            margin-top: 20px;
+        }
+        /* Mniejsza czcionka dla nagłówków w rozwijanej sekcji */
+        .collapsible-content h2 {
+            font-size: 14px;
+        }
         .metric-section {
-            margin-bottom: 25px;
+            margin-bottom: 5px;
         }
         .progress-container {
             margin-bottom: 20px;
@@ -183,6 +216,98 @@ export class SessionPopupPanel {
         .session-timer .progress-bar {
             margin-bottom: 12px;
         }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        .collapse-toggle {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+            display: flex;
+            align-items: center;
+        }
+        .collapse-arrow {
+            display: inline-block;
+            font-size: 14px;
+            width: 14px;
+            text-align: center;
+            transition: transform 0.3s ease;
+            margin-right: 6px;
+        }
+        .collapse-arrow.collapsed {
+            transform: rotate(-90deg);
+        }
+        .collapsible-content {
+            max-height: 500px;
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+            padding-bottom: 15px;
+        }
+        .collapsible-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+            padding-bottom: 0;
+        }
+        .stacked-bar {
+            width: 100%;
+            height: 30px;
+            background-color: var(--vscode-input-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+            position: relative;
+        }
+        .stacked-segment {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 11px;
+            transition: width 0.3s ease;
+        }
+        .breakdown-list {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+        }
+        .breakdown-item {
+            background-color: var(--vscode-input-background);
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-panel-border);
+            display: flex;
+            align-items: center;
+        }
+        .breakdown-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+        .breakdown-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .breakdown-name {
+            font-size: 11px;
+            font-weight: bold;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .breakdown-value {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+        }
     </style>
     <script>
         // Store session end time for local countdown
@@ -222,6 +347,42 @@ export class SessionPopupPanel {
         setInterval(updateTimer, 1000);
         updateTimer(); // Initial update
 
+        // Collapsible sections functionality
+        function toggleSection(sectionId) {
+            const content = document.getElementById(sectionId + '-content');
+            const arrow = document.getElementById(sectionId + '-arrow');
+
+            if (content && arrow) {
+                content.classList.toggle('collapsed');
+                arrow.classList.toggle('collapsed');
+
+                // Save state to localStorage
+                const isCollapsed = content.classList.contains('collapsed');
+                localStorage.setItem('claude-section-' + sectionId, isCollapsed ? 'collapsed' : 'expanded');
+            }
+        }
+
+        // Restore collapsed states from localStorage
+        function restoreCollapsedStates() {
+            const sections = ['token-details', 'cost-details', 'message-details'];
+            sections.forEach(sectionId => {
+                const state = localStorage.getItem('claude-section-' + sectionId);
+                // If state is 'expanded', remove collapsed class
+                if (state === 'expanded') {
+                    const content = document.getElementById(sectionId + '-content');
+                    const arrow = document.getElementById(sectionId + '-arrow');
+                    if (content && arrow) {
+                        content.classList.remove('collapsed');
+                        arrow.classList.remove('collapsed');
+                    }
+                }
+                // Otherwise keep default collapsed state
+            });
+        }
+
+        // Restore states on load
+        restoreCollapsedStates();
+
         // Listen for updates from extension
         window.addEventListener('message', event => {
             const message = event.data;
@@ -234,6 +395,21 @@ export class SessionPopupPanel {
 
                 // Update all metrics
                 updateMetrics(session, planConfig);
+
+                // Show content if it was hidden
+                document.getElementById('main-content').style.display = 'block';
+                document.getElementById('refreshing-message').style.display = 'none';
+                document.getElementById('no-session-message').style.display = 'none';
+            } else if (message.type === 'refreshing') {
+                // Show refreshing message
+                document.getElementById('main-content').style.display = 'none';
+                document.getElementById('refreshing-message').style.display = 'block';
+                document.getElementById('no-session-message').style.display = 'none';
+            } else if (message.type === 'no-session') {
+                // Show no session message
+                document.getElementById('main-content').style.display = 'none';
+                document.getElementById('refreshing-message').style.display = 'none';
+                document.getElementById('no-session-message').style.display = 'block';
             }
         });
 
@@ -259,6 +435,37 @@ export class SessionPopupPanel {
             // Message count
             updateProgress('message', session.messageCount, session.messageLimit, messagePercent, 'messages');
             updateValue('message-burn-rate', session.messageBurnRate.toFixed(1) + ' msg/min');
+
+            // Model breakdown
+            if (session.modelBreakdown) {
+                const modelSegments = [
+                    { name: 'Opus', value: session.modelBreakdown.opus, color: MODEL_COLORS.opus },
+                    { name: 'Sonnet', value: session.modelBreakdown.sonnet, color: MODEL_COLORS.sonnet },
+                    { name: 'Haiku', value: session.modelBreakdown.haiku, color: MODEL_COLORS.haiku }
+                ].filter(s => s.value > 0).map(s => ({
+                    ...s,
+                    percent: (s.value / session.totalTokens) * 100
+                }));
+
+                renderStackedBar('model-stacked-bar', modelSegments);
+                renderBreakdownList('model-breakdown-list', modelSegments);
+            }
+
+            // Project breakdown
+            if (session.projectBreakdown) {
+                const projectSegments = Object.entries(session.projectBreakdown)
+                    .filter(([name, value]) => value > 0)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([name, value]) => ({
+                        name: name,
+                        value: value,
+                        color: stringToColor(name),
+                        percent: (value / session.totalTokens) * 100
+                    }));
+
+                renderStackedBar('project-stacked-bar', projectSegments);
+                renderBreakdownList('project-breakdown-list', projectSegments);
+            }
         }
 
         function updateProgress(id, current, limit, percent, unit) {
@@ -286,11 +493,122 @@ export class SessionPopupPanel {
             const elem = document.getElementById(id);
             if (elem) elem.textContent = value;
         }
+
+        // Generate color from string hash (for projects)
+        function stringToColor(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue = Math.abs(hash % 360);
+            return 'hsl(' + hue + ', 65%, 55%)';
+        }
+
+        // Model colors
+        const MODEL_COLORS = {
+            opus: '#ff6b6b',
+            sonnet: '#4dabf7',
+            haiku: '#51cf66'
+        };
+
+        // Render stacked bar
+        function renderStackedBar(containerId, segments) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            container.innerHTML = '';
+
+            segments.forEach(segment => {
+                if (segment.percent > 0) {
+                    const div = document.createElement('div');
+                    div.className = 'stacked-segment';
+                    div.style.width = segment.percent + '%';
+                    div.style.backgroundColor = segment.color;
+                    // Only show label if segment is big enough
+                    if (segment.percent > 10) {
+                        div.textContent = segment.percent.toFixed(1) + '%';
+                    }
+                    container.appendChild(div);
+                }
+            });
+        }
+
+        // Render breakdown list
+        function renderBreakdownList(containerId, items) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            container.innerHTML = '';
+
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'breakdown-item';
+                div.innerHTML = '<div class="breakdown-color" style="background-color: ' + item.color + ';"></div>' +
+                    '<div class="breakdown-info">' +
+                    '<div class="breakdown-name">' + item.name + '</div>' +
+                    '<div class="breakdown-value">' + item.value.toLocaleString() + ' tokens (' + item.percent.toFixed(1) + '%)</div>' +
+                    '</div>';
+                container.appendChild(div);
+            });
+        }
+
+        // Initialize breakdowns on page load
+        (function initBreakdowns() {
+            const session = ${JSON.stringify({
+              totalTokens: session.totalTokens,
+              modelBreakdown: session.modelBreakdown,
+              projectBreakdown: session.projectBreakdown
+            })};
+
+            // Model breakdown
+            if (session.modelBreakdown) {
+                const modelSegments = [
+                    { name: 'Opus', value: session.modelBreakdown.opus, color: MODEL_COLORS.opus },
+                    { name: 'Sonnet', value: session.modelBreakdown.sonnet, color: MODEL_COLORS.sonnet },
+                    { name: 'Haiku', value: session.modelBreakdown.haiku, color: MODEL_COLORS.haiku }
+                ].filter(s => s.value > 0).map(s => ({
+                    ...s,
+                    percent: (s.value / session.totalTokens) * 100
+                }));
+
+                renderStackedBar('model-stacked-bar', modelSegments);
+                renderBreakdownList('model-breakdown-list', modelSegments);
+            }
+
+            // Project breakdown
+            if (session.projectBreakdown) {
+                const projectSegments = Object.entries(session.projectBreakdown)
+                    .filter(([name, value]) => value > 0)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([name, value]) => ({
+                        name: name,
+                        value: value,
+                        color: stringToColor(name),
+                        percent: (value / session.totalTokens) * 100
+                    }));
+
+                renderStackedBar('project-stacked-bar', projectSegments);
+                renderBreakdownList('project-breakdown-list', projectSegments);
+            }
+        })();
     </script>
 </head>
 <body>
     <h1>Claude Code Statistics</h1>
 
+    <div id="refreshing-message" style="display: none; text-align: center; padding: 50px;">
+        <h2>Refreshing Session...</h2>
+        <p style="color: var(--vscode-descriptionForeground);">Checking for new session data</p>
+        <div style="margin-top: 20px; font-size: 24px;">$(sync~spin)</div>
+    </div>
+
+    <div id="no-session-message" style="display: none; text-align: center; padding: 50px;">
+        <h2>No Active Session</h2>
+        <p style="color: var(--vscode-descriptionForeground);">No Claude Code session found for today</p>
+        <p style="color: var(--vscode-descriptionForeground); margin-top: 10px;">Start using Claude Code to begin tracking</p>
+    </div>
+
+    <div id="main-content">
     <div class="session-timer">
         <div class="info-label">TIME UNTIL SESSION RESET</div>
         <div class="timer-value" id="timer-value">${timeRemaining}</div>
@@ -301,7 +619,12 @@ export class SessionPopupPanel {
         <div class="info-label">Started: ${session.startTime.toLocaleString()} • Ends: ${session.sessionEndTime.toLocaleString()}</div>
     </div>
 
-    <h2>Token Usage</h2>
+    <div class="section-header" onclick="toggleSection('token-details')">
+        <h2>Token Usage</h2>
+        <div class="collapse-toggle">
+            <span class="collapse-arrow collapsed" id="token-details-arrow">▼</span>More...
+        </div>
+    </div>
     <div class="metric-section">
         <div class="progress-container">
             <div class="progress-label">
@@ -314,31 +637,46 @@ export class SessionPopupPanel {
                 </div>
             </div>
         </div>
-        <div class="info-grid">
-            <div class="info-item">
-                <div class="info-label">Input Tokens</div>
-                <div class="info-value" id="input-tokens">${session.inputTokens.toLocaleString()}</div>
+        <div class="collapsible-content collapsed" id="token-details-content">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Input Tokens</div>
+                    <div class="info-value" id="input-tokens">${session.inputTokens.toLocaleString()}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Output Tokens</div>
+                    <div class="info-value" id="output-tokens">${session.outputTokens.toLocaleString()}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Cache Creation</div>
+                    <div class="info-value" id="cache-creation">${session.cacheCreationTokens.toLocaleString()}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Cache Read</div>
+                    <div class="info-value" id="cache-read">${session.cacheReadTokens.toLocaleString()}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Burn Rate</div>
+                    <div class="info-value" id="token-burn-rate">${Math.round(session.tokenBurnRate)} tokens/min</div>
+                </div>
             </div>
-            <div class="info-item">
-                <div class="info-label">Output Tokens</div>
-                <div class="info-value" id="output-tokens">${session.outputTokens.toLocaleString()}</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Cache Creation</div>
-                <div class="info-value" id="cache-creation">${session.cacheCreationTokens.toLocaleString()}</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Cache Read</div>
-                <div class="info-value" id="cache-read">${session.cacheReadTokens.toLocaleString()}</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Burn Rate</div>
-                <div class="info-value" id="token-burn-rate">${Math.round(session.tokenBurnRate)} tokens/min</div>
-            </div>
+
+            <h2 style="margin-top: 20px;">Token Usage by Model</h2>
+            <div class="stacked-bar" id="model-stacked-bar"></div>
+            <div class="breakdown-list" id="model-breakdown-list"></div>
+
+            <h2 style="margin-top: 20px;">Token Usage by Project</h2>
+            <div class="stacked-bar" id="project-stacked-bar"></div>
+            <div class="breakdown-list" id="project-breakdown-list"></div>
         </div>
     </div>
 
-    <h2>Cost Usage</h2>
+    <div class="section-header" onclick="toggleSection('cost-details')">
+        <h2>Cost Usage</h2>
+        <div class="collapse-toggle">
+            <span class="collapse-arrow collapsed" id="cost-details-arrow">▼</span>More...
+        </div>
+    </div>
     <div class="metric-section">
         <div class="progress-container">
             <div class="progress-label">
@@ -351,19 +689,26 @@ export class SessionPopupPanel {
                 </div>
             </div>
         </div>
-        <div class="info-grid">
-            <div class="info-item">
-                <div class="info-label">Cost Burn Rate</div>
-                <div class="info-value" id="cost-burn-rate">${formatCost(session.costBurnRate)}/min</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Plan</div>
-                <div class="info-value">${planConfig.plan.toUpperCase()}</div>
+        <div class="collapsible-content collapsed" id="cost-details-content">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Cost Burn Rate</div>
+                    <div class="info-value" id="cost-burn-rate">${formatCost(session.costBurnRate)}/min</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Plan</div>
+                    <div class="info-value">${planConfig.plan.toUpperCase()}</div>
+                </div>
             </div>
         </div>
     </div>
 
-    <h2>Message Count</h2>
+    <div class="section-header" onclick="toggleSection('message-details')">
+        <h2>Message Count</h2>
+        <div class="collapse-toggle">
+            <span class="collapse-arrow collapsed" id="message-details-arrow">▼</span>More...
+        </div>
+    </div>
     <div class="metric-section">
         <div class="progress-container">
             <div class="progress-label">
@@ -376,13 +721,16 @@ export class SessionPopupPanel {
                 </div>
             </div>
         </div>
-        <div class="info-grid">
-            <div class="info-item">
-                <div class="info-label">Message Burn Rate</div>
-                <div class="info-value" id="message-burn-rate">${session.messageBurnRate.toFixed(1)} msg/min</div>
+        <div class="collapsible-content collapsed" id="message-details-content">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Message Burn Rate</div>
+                    <div class="info-value" id="message-burn-rate">${session.messageBurnRate.toFixed(1)} msg/min</div>
+                </div>
             </div>
         </div>
     </div>
+    </div><!-- end main-content -->
 </body>
 </html>`;
   }
