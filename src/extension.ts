@@ -29,6 +29,7 @@ export function activate(context: vscode.ExtensionContext) {
   // State
   let currentSession: SessionMetrics | null = null;
   let isRefreshing = false;
+  let sessionJustEnded = false;
 
   statusBar.showInitializing();
 
@@ -117,6 +118,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         currentSession = metrics;
         isRefreshing = false;
+        sessionJustEnded = false;
         statusBar.update(currentSession, planConfig);
         statusBar.updateTooltip(currentSession, planConfig);
 
@@ -126,6 +128,24 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } else {
         outputChannel.appendLine('WARNING: No active sessions');
+
+        // Show warning if session just ended and no new session detected
+        if (sessionJustEnded) {
+          const config = vscode.workspace.getConfiguration('claudeStatusBar');
+          const notifyNoNewSession = config.get<boolean>(
+            'notifications.noNewSessionWarning',
+            true
+          );
+
+          if (notifyNoNewSession) {
+            vscode.window.showWarningMessage(
+              '⚠️ No new session detected\nClaude Code appears to be inactive. Start a new conversation to begin tracking.',
+              'OK'
+            );
+          }
+          sessionJustEnded = false;
+        }
+
         currentSession = null;
         isRefreshing = false;
         statusBar.update(null, planConfig);
@@ -165,10 +185,26 @@ export function activate(context: vscode.ExtensionContext) {
       // If timer reached 0 and we're not already refreshing, trigger immediate refresh
       if (timeRemaining === 0 && !isRefreshing) {
         isRefreshing = true;
+        sessionJustEnded = true;
         statusBar.showRefreshing();
         if (popupPanel.isOpen()) {
           popupPanel.showRefreshing();
         }
+
+        // Show notification if enabled
+        const config = vscode.workspace.getConfiguration('claudeStatusBar');
+        const notifyOnSessionEnded = config.get<boolean>(
+          'notifications.sessionEnded',
+          true
+        );
+
+        if (notifyOnSessionEnded) {
+          vscode.window.showInformationMessage(
+            '🔄 Claude session ended\nStatistics have been reset. Waiting for new session...',
+            'OK'
+          );
+        }
+
         // Trigger immediate metrics update
         setTimeout(() => updateMetrics(), 100);
       } else {

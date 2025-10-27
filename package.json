@@ -2,7 +2,7 @@
   "name": "claude-statusbar",
   "displayName": "Claude Code Status Bar Monitor",
   "description": "Real-time monitoring of Claude Code usage in VS Code status bar - tokens, costs, and messages",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "bartosz-warzocha",
   "icon": "resources/icon.png",
   "repository": {
@@ -92,6 +92,16 @@
           "minimum": 1,
           "maximum": 60,
           "description": "Refresh interval in seconds (1-60)"
+        },
+        "claudeStatusBar.notifications.sessionEnded": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when session timer reaches zero"
+        },
+        "claudeStatusBar.notifications.noNewSessionWarning": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show warning when no new session is detected after reset"
         }
       }
     }
