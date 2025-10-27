@@ -30,19 +30,33 @@ export async function parseSessionFile(filePath: string): Promise<ClaudeMessage[
 
         // Extract relevant fields from the nested message structure
         const msg = parsed.message;
+
+        // Skip messages without usage data (Python does this in reader.py:244-245)
+        if (!msg.usage) {
+          continue;
+        }
+
+        // Skip messages with zero tokens (Python checks: if not any(v for k, v in token_data.items()))
+        const hasTokens =
+          (msg.usage.input_tokens && msg.usage.input_tokens > 0) ||
+          (msg.usage.output_tokens && msg.usage.output_tokens > 0);
+
+        if (!hasTokens) {
+          continue;
+        }
+
         const message: ClaudeMessage = {
           id: msg.id || parsed.uuid || '',
+          requestId: parsed.request_id || parsed.requestId || 'unknown',
           timestamp: parsed.timestamp || new Date().toISOString(),
           role: msg.role || 'user',
           model: msg.model || undefined,
-          usage: msg.usage
-            ? {
-                input_tokens: msg.usage.input_tokens || 0,
-                cache_creation_input_tokens: msg.usage.cache_creation_input_tokens || 0,
-                cache_read_input_tokens: msg.usage.cache_read_input_tokens || 0,
-                output_tokens: msg.usage.output_tokens || 0,
-              }
-            : undefined,
+          usage: {
+            input_tokens: msg.usage.input_tokens || 0,
+            cache_creation_input_tokens: msg.usage.cache_creation_input_tokens || 0,
+            cache_read_input_tokens: msg.usage.cache_read_input_tokens || 0,
+            output_tokens: msg.usage.output_tokens || 0,
+          },
         };
 
         messages.push(message);

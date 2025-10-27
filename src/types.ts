@@ -17,6 +17,7 @@ export interface MessageUsage {
  */
 export interface ClaudeMessage {
   id: string;
+  requestId: string; // Request ID for deduplication (combined with id)
   timestamp: string; // ISO 8601 format
   role: 'user' | 'assistant';
   model?: string; // Model identifier (e.g., "claude-sonnet-4-20250514")

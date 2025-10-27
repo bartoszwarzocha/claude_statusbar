@@ -13,6 +13,12 @@ import { getPlanConfig } from './plans';
 export function activate(context: vscode.ExtensionContext) {
   console.log('Claude Status Bar Monitor is now active!');
 
+  // Create output channel for debugging
+  const outputChannel = vscode.window.createOutputChannel('Claude Status Bar Debug');
+  outputChannel.appendLine('='.repeat(80));
+  outputChannel.appendLine('Claude Status Bar Monitor activated');
+  outputChannel.appendLine('='.repeat(80));
+
   // Initialize components
   const statusBar = new StatusBarManager();
   const popupPanel = new SessionPopupPanel(context.extensionUri);
@@ -43,71 +49,87 @@ export function activate(context: vscode.ExtensionContext) {
    */
   async function updateMetrics() {
     try {
-      console.log('🔄 Updating metrics...');
+      const timestamp = new Date().toLocaleTimeString();
+      outputChannel.appendLine('');
+      outputChannel.appendLine(`[${timestamp}] ========== UPDATE METRICS ==========`);
 
       const allMessages: any[] = [];
 
-      // Step 1: Collect ALL messages from ALL files across ALL projects
-      for (const basePath of claudeDataPaths) {
-        if (!fs.existsSync(basePath)) {
-          continue;
-        }
-
-        const projectDirs = fs.readdirSync(basePath);
-
-        for (const projectDir of projectDirs) {
-          const projectPath = path.join(basePath, projectDir);
-
-          if (!fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
-            continue;
-          }
-
-          const files = fs.readdirSync(projectPath).filter((f) => f.endsWith('.jsonl'));
-
-          // Read each session file
-          for (const file of files) {
-            const filePath = path.join(projectPath, file);
-
-            try {
-              const messages = await parseSessionFile(filePath);
-              allMessages.push(...messages);
-            } catch (err) {
-              // Skip files that can't be parsed
-              console.warn(`Skipping ${filePath}:`, err);
-            }
-          }
-        }
-      }
-
-      console.log(`📊 Collected ${allMessages.length} total messages`);
-
-      if (allMessages.length === 0) {
-        console.log('   └─ ⚠️ No messages found');
+      // Step 1: Use ONLY the first data path (like Python does: data_path = data_paths[0])
+      const basePath = claudeDataPaths[0];
+      if (!basePath || !fs.existsSync(basePath)) {
+        outputChannel.appendLine('WARNING: No valid Claude data path found');
         currentSession = null;
         statusBar.update(null, planConfig);
         return;
       }
 
-      // Step 2: Calculate metrics
-      const metrics = calculateSessionMetrics(allMessages, 'combined', planConfig);
+      outputChannel.appendLine(`Using data path: ${basePath}`);
+
+      const projectDirs = fs.readdirSync(basePath);
+
+      // Collect from ALL projects in this data path
+      for (const projectDir of projectDirs) {
+        const projectPath = path.join(basePath, projectDir);
+
+        if (!fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
+          continue;
+        }
+
+        const files = fs.readdirSync(projectPath).filter((f) => f.endsWith('.jsonl'));
+
+        // Read each session file
+        for (const file of files) {
+          const filePath = path.join(projectPath, file);
+
+          try {
+            const messages = await parseSessionFile(filePath);
+            allMessages.push(...messages);
+          } catch (err) {
+            // Skip files that can't be parsed
+            console.warn(`Skipping ${filePath}:`, err);
+          }
+        }
+      }
+
+      outputChannel.appendLine(`Collected ${allMessages.length} total messages from all files`);
+
+      if (allMessages.length === 0) {
+        outputChannel.appendLine('WARNING: No messages found');
+        currentSession = null;
+        statusBar.update(null, planConfig);
+        return;
+      }
+
+      // Step 2: Calculate metrics (pass output channel for detailed logging)
+      outputChannel.appendLine('Calculating session metrics...');
+      const metrics = calculateSessionMetrics(allMessages, 'combined', planConfig, outputChannel);
 
       if (metrics && metrics.isActive) {
-        console.log(`✅ Active session found`);
-        console.log(`   └─ Started: ${metrics.startTime.toLocaleString()}`);
-        console.log(`   └─ Last activity: ${metrics.lastMessageTime.toLocaleString()}`);
-        console.log(`   └─ Tokens: ${metrics.totalTokens}`);
-        console.log(`   └─ Cost: $${metrics.totalCost.toFixed(2)}`);
-        console.log(`   └─ Messages: ${metrics.messageCount}`);
+        outputChannel.appendLine('');
+        outputChannel.appendLine('ACTIVE SESSION FOUND:');
+        outputChannel.appendLine(`  Started: ${metrics.startTime.toLocaleString()}`);
+        outputChannel.appendLine(`  Last activity: ${metrics.lastMessageTime.toLocaleString()}`);
+        outputChannel.appendLine(`  Tokens: ${metrics.totalTokens} / ${planConfig.tokenLimit} (${((metrics.totalTokens / planConfig.tokenLimit) * 100).toFixed(1)}%)`);
+        outputChannel.appendLine(`  Cost: $${metrics.totalCost.toFixed(2)} / $${metrics.costLimit.toFixed(2)} (${((metrics.totalCost / metrics.costLimit) * 100).toFixed(1)}%)`);
+        outputChannel.appendLine(`  Messages: ${metrics.messageCount} / ${metrics.messageLimit} (${((metrics.messageCount / metrics.messageLimit) * 100).toFixed(1)}%)`);
 
         currentSession = metrics;
         statusBar.update(currentSession, planConfig);
+        statusBar.updateTooltip(currentSession, planConfig);
+
+        // Update popup panel if open
+        if (popupPanel.isOpen()) {
+          popupPanel.update(currentSession, planConfig);
+        }
       } else {
-        console.log('   └─ ⚠️ No active sessions');
+        outputChannel.appendLine('WARNING: No active sessions');
         currentSession = null;
         statusBar.update(null, planConfig);
       }
     } catch (error) {
-      console.error('❌ Error updating metrics:', error);
+      outputChannel.appendLine(`ERROR: ${error}`);
+      outputChannel.appendLine(`Stack: ${error instanceof Error ? error.stack : 'N/A'}`);
     }
   }
 
@@ -118,11 +140,38 @@ export function activate(context: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration('claudeStatusBar');
   const refreshInterval = Math.max(1, Math.min(60, config.get<number>('refreshInterval', 5)));
 
-  // Update at configured interval
-  const interval = setInterval(updateMetrics, refreshInterval * 1000);
+  // Update at configured interval for metrics
+  const metricsInterval = setInterval(updateMetrics, refreshInterval * 1000);
+
+  // Update status bar every second to refresh timer dynamically
+  const timerInterval = setInterval(() => {
+    if (currentSession && currentSession.isActive) {
+      // Recalculate timeRemaining dynamically for live countdown
+      const now = new Date();
+      const updatedSession = {
+        ...currentSession,
+        timeRemaining: Math.max(0, currentSession.sessionEndTime.getTime() - now.getTime()),
+      };
+      statusBar.update(updatedSession, planConfig);
+
+      // Also update the popup panel if it's open
+      if (popupPanel.isOpen()) {
+        popupPanel.update(updatedSession, planConfig);
+      }
+    } else if (currentSession) {
+      statusBar.update(currentSession, planConfig);
+
+      if (popupPanel.isOpen()) {
+        popupPanel.update(currentSession, planConfig);
+      }
+    }
+  }, 1000);
 
   context.subscriptions.push({
-    dispose: () => clearInterval(interval),
+    dispose: () => {
+      clearInterval(metricsInterval);
+      clearInterval(timerInterval);
+    },
   });
 
   // Watch for configuration changes
@@ -250,7 +299,8 @@ export function activate(context: vscode.ExtensionContext) {
     setPlanMax5,
     setPlanMax20,
     setPlanCustom,
-    refresh
+    refresh,
+    outputChannel
   );
 }
 

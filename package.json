@@ -3,7 +3,7 @@
   "displayName": "Claude Code Status Bar Monitor",
   "description": "Real-time monitoring of Claude Code usage in VS Code status bar - tokens, costs, and messages",
   "version": "0.1.0",
-  "publisher": "claude-statusbar",
+  "publisher": "bartosz-warzocha",
   "icon": "resources/icon.png",
   "repository": {
     "type": "git",
@@ -19,6 +19,17 @@
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "ai",
+    "usage",
+    "monitor",
+    "tokens",
+    "cost",
+    "status bar",
+    "tracking"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -51,6 +62,15 @@
         "title": "Claude: Refresh Usage Stats"
       }
     ],
+    "icons": {
+      "claude-icon": {
+        "description": "Claude AI icon",
+        "default": {
+          "fontPath": "./resources/Glyphter.woff",
+          "fontCharacter": "\\005E"
+        }
+      }
+    },
     "configuration": {
       "title": "Claude Status Bar",
       "properties": {

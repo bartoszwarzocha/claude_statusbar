@@ -9,14 +9,14 @@
 ### 📊 Status Bar Display
 Compact, real-time monitoring in your status bar:
 ```
-Reset: 03:45:12 | C: 12.56$/35.00$ | T: 65489/88000 | M: 255/1000
+Reset: 03:45:12 | C: 35.9% | T: 74.4% | M: 25.5%
 ```
 
 Where:
 - **Reset**: Countdown timer to session reset (HH:MM:SS)
-- **C**: Current cost vs limit
-- **T**: Token usage vs limit
-- **M**: Message count vs limit
+- **C**: Cost usage percentage
+- **T**: Token usage percentage
+- **M**: Message count percentage
 
 ### 🎨 Detailed Popup
 Click the status bar to see detailed metrics with:
@@ -44,10 +44,10 @@ Simple configuration with just two settings:
 ## Usage
 
 ### Status Bar
-The extension automatically starts monitoring when you open VS Code. The status bar shows real-time usage with color-coded warnings:
-- 🟢 Green: < 60% of limit
-- 🟡 Yellow: 60-80% of limit
-- 🔴 Red: > 80% of limit
+The extension automatically starts monitoring when you open VS Code. The status bar shows real-time usage with color-coded warnings based on token usage:
+- ⚪ Neutral: < 75% of token limit
+- 🟠 Orange: 75-89% of token limit
+- 🔴 Red: ≥ 90% of token limit
 
 ### Commands
 Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):

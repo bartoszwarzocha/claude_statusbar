@@ -24,7 +24,7 @@ export class StatusBarManager {
    */
   public update(session: SessionMetrics | null, planConfig: PlanConfig) {
     if (!session) {
-      this.statusBarItem.text = '$(clock) No Session';
+      this.statusBarItem.text = '$(claude-icon) No Session';
       this.statusBarItem.tooltip = 'No active Claude Code session';
       this.statusBarItem.backgroundColor = undefined;
       return;
@@ -34,34 +34,47 @@ export class StatusBarManager {
       ? formatTimeRemaining(session.timeRemaining)
       : '00:00:00';
 
-    // Format: Reset: HH:MM:SS | C: X.XX$/Y.XX$ | T: X/Y | M: X/Y
-    const costText = `${formatCost(session.totalCost)}/${formatCost(session.costLimit)}`;
-    const tokenText = `${session.totalTokens.toLocaleString()}/${planConfig.tokenLimit.toLocaleString()}`;
-    const messageText = `${session.messageCount}/${session.messageLimit}`;
+    // Calculate percentages
+    const tokenPercent = (session.totalTokens / planConfig.tokenLimit) * 100;
+    const costPercent = (session.totalCost / session.costLimit) * 100;
+    const messagePercent = (session.messageCount / session.messageLimit) * 100;
 
+    // Format: $(claude-icon) Reset: HH:MM:SS | C: XX.X% | T: XX.X% | M: XX.X%
     this.statusBarItem.text =
-      `Reset: ${timeRemaining} | ` +
-      `C: ${costText} | ` +
-      `T: ${tokenText} | ` +
-      `M: ${messageText}`;
+      `$(claude-icon)  Reset: ${timeRemaining} | ` +
+      `C: ${costPercent.toFixed(1)}% | ` +
+      `T: ${tokenPercent.toFixed(1)}% | ` +
+      `M: ${messagePercent.toFixed(1)}%`;
 
-    // Build detailed tooltip
+    // Set background and foreground colors based on TOKEN usage percentage
+    if (tokenPercent >= 75) {
+      // Error (red) or Warning (orange) background
+      this.statusBarItem.backgroundColor = new vscode.ThemeColor(
+        tokenPercent >= 90 ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground'
+      );
+      this.statusBarItem.color = undefined;
+    } else {
+      // Safe usage - remote/blue background (like WSL indicator)
+      this.statusBarItem.backgroundColor = undefined;
+      this.statusBarItem.color = undefined;
+    }
+  }
+
+  /**
+   * Update only the tooltip (called less frequently to avoid flicker)
+   */
+  public updateTooltip(session: SessionMetrics, planConfig: PlanConfig) {
     const tokenPercent = (session.totalTokens / planConfig.tokenLimit) * 100;
     const costPercent = (session.totalCost / session.costLimit) * 100;
     const messagePercent = (session.messageCount / session.messageLimit) * 100;
 
     this.statusBarItem.tooltip = new vscode.MarkdownString(
-      `**Claude Code Usage Monitor**\n\n` +
+      `**Claude Code Statistics**\n\n` +
         `**Session Timer**\n` +
         `- Started: ${session.startTime.toLocaleTimeString()}\n` +
-        `- Ends: ${session.sessionEndTime.toLocaleTimeString()}\n` +
-        `- Remaining: ${timeRemaining}\n\n` +
+        `- Ends: ${session.sessionEndTime.toLocaleTimeString()}\n\n` +
         `**Token Usage**\n` +
-        `- Used: ${session.totalTokens.toLocaleString()} / ${planConfig.tokenLimit.toLocaleString()} (${tokenPercent.toFixed(1)}%)\n` +
-        `- Input: ${session.inputTokens.toLocaleString()}\n` +
-        `- Output: ${session.outputTokens.toLocaleString()}\n` +
-        `- Cache (creation): ${session.cacheCreationTokens.toLocaleString()}\n` +
-        `- Cache (read): ${session.cacheReadTokens.toLocaleString()}\n\n` +
+        `- Used: ${session.totalTokens.toLocaleString()} / ${planConfig.tokenLimit.toLocaleString()} (${tokenPercent.toFixed(1)}%)\n\n` +
         `**Cost**\n` +
         `- Used: ${formatCost(session.totalCost)} / ${formatCost(session.costLimit)} (${costPercent.toFixed(1)}%)\n\n` +
         `**Messages**\n` +
@@ -72,39 +85,28 @@ export class StatusBarManager {
         `- Messages: ${session.messageBurnRate.toFixed(1)}/min\n\n` +
         `_Click for detailed view_`
     );
-
-    // Set color based on highest usage percentage
-    const maxPercent = Math.max(tokenPercent, costPercent, messagePercent);
-
-    if (maxPercent >= 80) {
-      this.statusBarItem.backgroundColor = new vscode.ThemeColor(
-        maxPercent >= 100
-          ? 'statusBarItem.errorBackground'
-          : 'statusBarItem.warningBackground'
-      );
-    } else {
-      this.statusBarItem.backgroundColor = undefined;
-    }
   }
 
   /**
    * Show initializing state
    */
   public showInitializing() {
-    this.statusBarItem.text = '$(loading~spin) Initializing...';
+    this.statusBarItem.text = '$(claude-icon) Initializing...';
     this.statusBarItem.tooltip = 'Claude Status Bar Monitor starting up...';
     this.statusBarItem.backgroundColor = undefined;
+    this.statusBarItem.color = undefined;
   }
 
   /**
    * Show error state
    */
   public showError(message: string) {
-    this.statusBarItem.text = '$(error) Error';
+    this.statusBarItem.text = '$(claude-icon) Error';
     this.statusBarItem.tooltip = message;
     this.statusBarItem.backgroundColor = new vscode.ThemeColor(
       'statusBarItem.errorBackground'
     );
+    this.statusBarItem.color = undefined;
   }
 
   /**

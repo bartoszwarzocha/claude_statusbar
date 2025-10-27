@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 import { ClaudeMessage, SessionMetrics, PlanConfig } from './types';
 import { calculateLimitTokens } from './sessionParser';
 import { calculateMessageCost } from './pricing';
@@ -6,7 +7,21 @@ const SESSION_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours in milliseconds
 const BURN_RATE_WINDOW_MS = 10 * 60 * 1000; // Last 10 minutes for burn rate
 
 /**
- * Session set within a 5-hour window
+ * Round timestamp to nearest full hour in UTC
+ * Logic from Maciek-roboblog/Claude-Code-Usage-Monitor
+ */
+function roundToNearestHour(date: Date): Date {
+  const rounded = new Date(date);
+  rounded.setMinutes(0, 0, 0);
+  return rounded;
+}
+
+/**
+ * Group messages into 5-hour session sets
+ * Logic from Claude Code Usage Monitor (Maciek-roboblog):
+ * - Start time ROUNDED to nearest full hour in UTC
+ * - Session lasts 5 hours from rounded start
+ * - New session begins when: timestamp > end_time OR gap between messages >= 5h
  */
 interface SessionSet {
   startTime: Date;
@@ -15,13 +30,81 @@ interface SessionSet {
   messages: ClaudeMessage[];
 }
 
+function groupIntoFiveHourSets(messages: ClaudeMessage[]): SessionSet[] {
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const sets: SessionSet[] = [];
+  let currentSet: SessionSet | null = null;
+
+  for (const message of messages) {
+    const msgTime = new Date(message.timestamp);
+
+    if (!currentSet) {
+      // Start first set from rounded hour of first message
+      const roundedStart = roundToNearestHour(msgTime);
+      currentSet = {
+        startTime: roundedStart,
+        endTime: new Date(roundedStart.getTime() + SESSION_DURATION_MS),
+        lastMessageTime: msgTime,
+        messages: [message],
+      };
+    } else {
+      // Check if we need a new block (exact Python logic from analyzer.py)
+      if (msgTime >= currentSet.endTime) {
+        // Message is at or past end time - start new block
+        sets.push(currentSet);
+
+        const roundedStart = roundToNearestHour(msgTime);
+        currentSet = {
+          startTime: roundedStart,
+          endTime: new Date(roundedStart.getTime() + SESSION_DURATION_MS),
+          lastMessageTime: msgTime,
+          messages: [message],
+        };
+        continue;
+      }
+
+      // Check gap between this message and last message in set
+      const timeSinceLastMessage = msgTime.getTime() - currentSet.lastMessageTime.getTime();
+
+      // New session if: gap >= 5 hours
+      if (currentSet.messages.length > 0 && timeSinceLastMessage >= SESSION_DURATION_MS) {
+        // Save current and start new set
+        sets.push(currentSet);
+
+        const roundedStart = roundToNearestHour(msgTime);
+        currentSet = {
+          startTime: roundedStart,
+          endTime: new Date(roundedStart.getTime() + SESSION_DURATION_MS),
+          lastMessageTime: msgTime,
+          messages: [message],
+        };
+      } else {
+        // Message belongs to current set
+        currentSet.messages.push(message);
+        currentSet.lastMessageTime = msgTime;
+      }
+    }
+  }
+
+  // Add the last set
+  if (currentSet) {
+    sets.push(currentSet);
+  }
+
+  return sets;
+}
+
 /**
  * Calculate session metrics from ALL messages across all files
  */
 export function calculateSessionMetrics(
   messages: ClaudeMessage[],
   sessionId: string,
-  planConfig: PlanConfig
+  planConfig: PlanConfig,
+  outputChannel?: vscode.OutputChannel
 ): SessionMetrics | null {
   if (messages.length === 0) {
     return null;
@@ -29,72 +112,91 @@ export function calculateSessionMetrics(
 
   const now = new Date();
 
-  // Step 1: Remove duplicate messages by ID (in case same message appears in multiple files)
-  const uniqueMessages = Array.from(
-    new Map(messages.map((m) => [m.id, m])).values()
-  );
+  // Step 1: Remove duplicate messages using both ID and requestId (like Python does)
+  // Python creates hash as: f"{message_id}:{request_id}" and keeps FIRST occurrence
+  // IMPORTANT: Keep FIRST occurrence, not last (messages are streaming updates)
+  const seenHashes = new Set<string>();
+  const uniqueMessages: ClaudeMessage[] = [];
+  for (const m of messages) {
+    const hash = `${m.id}:${m.requestId}`;
+    if (!seenHashes.has(hash)) {
+      seenHashes.add(hash);
+      uniqueMessages.push(m);
+    }
+  }
 
-  console.log(
-    `🔄 Total messages: ${messages.length}, Unique messages: ${uniqueMessages.length}`
-  );
+  outputChannel?.appendLine(`Total messages: ${messages.length}, Unique: ${uniqueMessages.length}`);
 
   // Step 2: Sort all messages by timestamp
   const sortedMessages = [...uniqueMessages].sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  // Step 3: Filter to only today's messages
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  // Step 3: Filter to last 192 hours (8 days) like Python does
+  const HOURS_BACK = 192;
+  const cutoffTime = new Date(now.getTime() - HOURS_BACK * 60 * 60 * 1000);
 
-  const todayMessages = sortedMessages.filter((msg) => {
+  const recentMessages = sortedMessages.filter((msg) => {
     const msgTime = new Date(msg.timestamp);
-    return msgTime >= startOfToday;
+    return msgTime >= cutoffTime;
   });
 
-  console.log(
-    `📅 Sorted messages: ${sortedMessages.length}, Today's messages: ${todayMessages.length}`
-  );
+  outputChannel?.appendLine(`Sorted: ${sortedMessages.length}, Recent messages (last ${HOURS_BACK}h): ${recentMessages.length}`);
 
-  if (todayMessages.length === 0) {
-    return null; // No messages from today
+  if (recentMessages.length === 0) {
+    return null; // No recent messages
   }
 
-  // Step 4: Group into 5-hour sets starting from the very first message of today
-  const sets = groupIntoFiveHourSets(todayMessages);
+  // Step 4: Group into 5-hour sets starting from the very first recent message
+  const sets = groupIntoFiveHourSets(recentMessages);
 
-  console.log(`📦 Created ${sets.length} session sets`);
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine(`Created ${sets.length} session sets:`);
+  sets.forEach((set, i) => {
+    const setTokens = set.messages.reduce((sum, msg) =>
+      sum + (msg.usage ? calculateLimitTokens(msg.usage) : 0), 0
+    );
+    outputChannel?.appendLine(
+      `  Set ${i + 1}: ${set.startTime.toLocaleTimeString()} - ${set.endTime.toLocaleTimeString()} (${set.messages.length} msgs, ${setTokens} tokens)`
+    );
+  });
 
   if (sets.length === 0) {
     return null;
   }
 
   // Step 5: Find the last set that overlaps with current time
+  // A set overlaps if current time is between startTime and endTime
   const activeSets = sets.filter((set) => {
     return now >= set.startTime && now <= set.endTime;
   });
 
-  console.log(`✅ Active sets found: ${activeSets.length}`);
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine(`Current time: ${now.toLocaleTimeString()}`);
+  outputChannel?.appendLine(`Active sets found: ${activeSets.length}`);
 
   // Get the last (most recent) overlapping set
   const activeSet = activeSets.length > 0 ? activeSets[activeSets.length - 1] : null;
 
   if (!activeSet) {
+    outputChannel?.appendLine('WARNING: No active session set found');
     return null; // No active session - all sets have expired
   }
 
-  console.log(
-    `🎯 Active set: ${activeSet.startTime.toLocaleTimeString()} - ${activeSet.endTime.toLocaleTimeString()} with ${activeSet.messages.length} messages`
-  );
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine(`ACTIVE SET SELECTED:`);
+  outputChannel?.appendLine(`  Start: ${activeSet.startTime.toLocaleTimeString()}`);
+  outputChannel?.appendLine(`  End: ${activeSet.endTime.toLocaleTimeString()}`);
+  outputChannel?.appendLine(`  Messages: ${activeSet.messages.length}`);
 
-  // Calculate metrics for the active set
+  const sessionMessages = activeSet.messages;
   const startTime = activeSet.startTime;
   const lastMessageTime = activeSet.lastMessageTime;
   const sessionEndTime = activeSet.endTime;
   const timeRemaining = Math.max(0, sessionEndTime.getTime() - now.getTime());
   const isActive = timeRemaining > 0;
 
-  // Calculate token totals and costs for messages in this set
+  // Calculate token totals and costs for messages in this window
   let totalTokens = 0;
   let inputTokens = 0;
   let cacheCreationTokens = 0;
@@ -105,13 +207,18 @@ export function calculateSessionMetrics(
 
   const seenIds = new Set<string>();
 
-  for (const message of activeSet.messages) {
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine('ITERATING THROUGH SESSION MESSAGES:');
+
+  for (const message of sessionMessages) {
     if (message.usage) {
-      // Skip duplicates
-      if (seenIds.has(message.id)) {
+      // Skip duplicates (using same hash as Python: message_id:request_id)
+      const uniqueHash = `${message.id}:${message.requestId}`;
+      if (seenIds.has(uniqueHash)) {
+        outputChannel?.appendLine(`  SKIPPED (duplicate): ${message.id.substring(0, 8)}...`);
         continue;
       }
-      seenIds.add(message.id);
+      seenIds.add(uniqueHash);
 
       messageCount++;
       const msgTokens = calculateLimitTokens(message.usage);
@@ -121,38 +228,48 @@ export function calculateSessionMetrics(
       cacheReadTokens += message.usage.cache_read_input_tokens || 0;
       outputTokens += message.usage.output_tokens;
 
-      // Calculate cost (includes ALL tokens)
-      totalCost += calculateMessageCost(message.usage, message.model);
+      const msgCost = calculateMessageCost(message.usage, message.model);
+      totalCost += msgCost;
+
+      outputChannel?.appendLine(
+        `  Msg ${messageCount}: ${message.id.substring(0, 8)}... | ` +
+        `${msgTokens.toLocaleString()} tokens (in:${message.usage.input_tokens}, out:${message.usage.output_tokens}) | ` +
+        `$${msgCost.toFixed(4)}`
+      );
     }
   }
 
   // Calculate burn rates
   const tokenBurnRate = calculateBurnRate(
-    activeSet.messages,
+    sessionMessages,
     now,
     (msg) => (msg.usage ? calculateLimitTokens(msg.usage) : 0)
   );
 
   const costBurnRate = calculateBurnRate(
-    activeSet.messages,
+    sessionMessages,
     now,
     (msg) => (msg.usage ? calculateMessageCost(msg.usage, msg.model) : 0)
   );
 
   const messageBurnRate = calculateBurnRate(
-    activeSet.messages,
+    sessionMessages,
     now,
     (msg) => (msg.usage ? 1 : 0)
   );
 
-  console.log(`💰 Token breakdown:`);
-  console.log(`   Input: ${inputTokens}`);
-  console.log(`   Cache creation: ${cacheCreationTokens} (not counted toward limit)`);
-  console.log(`   Cache read: ${cacheReadTokens} (not counted toward limit)`);
-  console.log(`   Output: ${outputTokens}`);
-  console.log(`   TOTAL (toward limit): ${totalTokens}`);
-  console.log(`   Cost: $${totalCost.toFixed(2)}`);
-  console.log(`   Messages: ${messageCount}`);
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine('TOKEN BREAKDOWN FOR ACTIVE SESSION:');
+  outputChannel?.appendLine(`  Session: ${startTime.toLocaleTimeString()} - ${sessionEndTime.toLocaleTimeString()}`);
+  outputChannel?.appendLine(`  Messages in session: ${sessionMessages.length}`);
+  outputChannel?.appendLine(`  Messages counted: ${messageCount}`);
+  outputChannel?.appendLine(`  Input tokens: ${inputTokens.toLocaleString()}`);
+  outputChannel?.appendLine(`  Output tokens: ${outputTokens.toLocaleString()}`);
+  outputChannel?.appendLine(`  Cache creation: ${cacheCreationTokens.toLocaleString()} (NOT counted toward limit)`);
+  outputChannel?.appendLine(`  Cache read: ${cacheReadTokens.toLocaleString()} (NOT counted toward limit)`);
+  outputChannel?.appendLine(`  TOTAL (toward limit): ${totalTokens.toLocaleString()} = ${inputTokens.toLocaleString()} + ${outputTokens.toLocaleString()}`);
+  outputChannel?.appendLine(`  Cost: $${totalCost.toFixed(2)}`);
+  outputChannel?.appendLine(`  Time remaining: ${Math.floor(timeRemaining / 60000)} minutes`);
 
   return {
     totalTokens,
@@ -176,53 +293,6 @@ export function calculateSessionMetrics(
   };
 }
 
-/**
- * Group messages into 5-hour sets
- * Starting from the first message, create a 5-hour window.
- * Any messages outside that window start a new 5-hour set.
- */
-function groupIntoFiveHourSets(messages: ClaudeMessage[]): SessionSet[] {
-  if (messages.length === 0) {
-    return [];
-  }
-
-  const sets: SessionSet[] = [];
-  let currentSet: SessionSet | null = null;
-
-  for (const message of messages) {
-    const msgTime = new Date(message.timestamp);
-
-    if (!currentSet) {
-      // Start first set from the very first message
-      currentSet = {
-        startTime: msgTime,
-        endTime: new Date(msgTime.getTime() + SESSION_DURATION_MS),
-        lastMessageTime: msgTime,
-        messages: [message],
-      };
-    } else if (msgTime <= currentSet.endTime) {
-      // Message falls within current 5-hour set
-      currentSet.messages.push(message);
-      currentSet.lastMessageTime = msgTime;
-    } else {
-      // Message is outside current set - save current and start new set
-      sets.push(currentSet);
-      currentSet = {
-        startTime: msgTime,
-        endTime: new Date(msgTime.getTime() + SESSION_DURATION_MS),
-        lastMessageTime: msgTime,
-        messages: [message],
-      };
-    }
-  }
-
-  // Add the last set
-  if (currentSet) {
-    sets.push(currentSet);
-  }
-
-  return sets;
-}
 
 /**
  * Calculate burn rate (units per minute) over the last 10 minutes

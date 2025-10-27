@@ -19,6 +19,7 @@ idea.txt
 
 # Documentation (keep only README.md)
 CLAUDE.md
+ALGORITHM.md
 
 # Tests
 **/*.test.ts
