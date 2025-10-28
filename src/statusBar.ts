@@ -47,10 +47,10 @@ export class StatusBarManager {
       `M: ${messagePercent.toFixed(1)}%`;
 
     // Set background and foreground colors based on TOKEN usage percentage
-    if (tokenPercent >= 75) {
+    if (tokenPercent >= 60) {
       // Error (red) or Warning (orange) background
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
-        tokenPercent >= 90 ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground'
+        tokenPercent >= 80 ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground'
       );
       this.statusBarItem.color = undefined;
     } else {
@@ -93,16 +93,6 @@ export class StatusBarManager {
   public showInitializing() {
     this.statusBarItem.text = '$(claude-icon) Initializing...';
     this.statusBarItem.tooltip = 'Claude Status Bar Monitor starting up...';
-    this.statusBarItem.backgroundColor = undefined;
-    this.statusBarItem.color = undefined;
-  }
-
-  /**
-   * Show refreshing state
-   */
-  public showRefreshing() {
-    this.statusBarItem.text = '$(claude-icon) Refreshing...';
-    this.statusBarItem.tooltip = 'Checking for new session...';
     this.statusBarItem.backgroundColor = undefined;
     this.statusBarItem.color = undefined;
   }

@@ -97,11 +97,6 @@
           "type": "boolean",
           "default": true,
           "description": "Show notification when session timer reaches zero"
-        },
-        "claudeStatusBar.notifications.noNewSessionWarning": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show warning when no new session is detected after reset"
         }
       }
     }

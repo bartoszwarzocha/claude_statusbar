@@ -28,9 +28,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   // State
   let currentSession: SessionMetrics | null = null;
-  let isRefreshing = false;
-  let sessionJustEnded = false;
-  let refreshingStartTime: number | null = null;
 
   statusBar.showInitializing();
 
@@ -118,9 +115,6 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`  Messages: ${metrics.messageCount} / ${metrics.messageLimit} (${((metrics.messageCount / metrics.messageLimit) * 100).toFixed(1)}%)`);
 
         currentSession = metrics;
-        isRefreshing = false;
-        sessionJustEnded = false;
-        refreshingStartTime = null;
         statusBar.update(currentSession, planConfig);
         statusBar.updateTooltip(currentSession, planConfig);
 
@@ -131,32 +125,7 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         outputChannel.appendLine('WARNING: No active sessions');
 
-        // Show warning if session just ended and no new session detected after 30 seconds
-        if (sessionJustEnded && refreshingStartTime) {
-          const elapsedTime = Date.now() - refreshingStartTime;
-
-          if (elapsedTime >= 30000) {
-            // 30 seconds passed without detecting new session
-            const config = vscode.workspace.getConfiguration('claudeStatusBar');
-            const notifyNoNewSession = config.get<boolean>(
-              'notifications.noNewSessionWarning',
-              true
-            );
-
-            if (notifyNoNewSession) {
-              vscode.window.showWarningMessage(
-                '⚠️ No new session detected\nClaude Code appears to be inactive. Start a new conversation to begin tracking.',
-                'OK'
-              );
-            }
-            sessionJustEnded = false;
-            refreshingStartTime = null;
-          }
-          // If < 30s, keep waiting (will check again in next updateMetrics cycle)
-        }
-
         currentSession = null;
-        isRefreshing = false;
         statusBar.update(null, planConfig);
 
         // Update popup panel if open
@@ -182,24 +151,41 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Update status bar every second to refresh timer dynamically
   const timerInterval = setInterval(() => {
+    const now = new Date();
+
     if (currentSession && currentSession.isActive) {
+      // CRITICAL FIX: Check if session data is stale (from previous day or already expired)
+      // This prevents showing outdated session info after laptop sleep/resume
+      const sessionStartDay = currentSession.startTime.getDate();
+      const currentDay = now.getDate();
+      const sessionExpired = now > currentSession.sessionEndTime;
+
+      // If session is from a different day OR has expired, force immediate refresh
+      if (sessionStartDay !== currentDay || sessionExpired) {
+        outputChannel.appendLine(`[Timer] Session stale detected - forcing refresh (startDay: ${sessionStartDay}, currentDay: ${currentDay}, expired: ${sessionExpired})`);
+
+        // Clear current session and trigger metrics update
+        currentSession = null;
+        statusBar.update(null, planConfig);
+        if (popupPanel.isOpen()) {
+          popupPanel.showNoSession();
+        }
+
+        // Trigger immediate metrics update
+        setTimeout(() => updateMetrics(), 100);
+        return; // Don't update with stale data
+      }
+
       // Recalculate timeRemaining dynamically for live countdown
-      const now = new Date();
       const timeRemaining = Math.max(0, currentSession.sessionEndTime.getTime() - now.getTime());
       const updatedSession = {
         ...currentSession,
         timeRemaining,
       };
 
-      // If timer reached 0 and we're not already refreshing, trigger immediate refresh
-      if (timeRemaining === 0 && !isRefreshing) {
-        isRefreshing = true;
-        sessionJustEnded = true;
-        refreshingStartTime = Date.now(); // Start 30s countdown
-        statusBar.showRefreshing();
-        if (popupPanel.isOpen()) {
-          popupPanel.showRefreshing();
-        }
+      // If timer reached 0, session has ended
+      if (timeRemaining === 0) {
+        outputChannel.appendLine(`[Timer] Session ended at ${now.toLocaleTimeString()}`);
 
         // Show notification if enabled
         const config = vscode.workspace.getConfiguration('claudeStatusBar');
@@ -210,12 +196,19 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (notifyOnSessionEnded) {
           vscode.window.showInformationMessage(
-            '🔄 Claude session ended\nStatistics have been reset. Waiting for new session...',
+            '🔄 Claude session ended\nStart a new conversation to begin tracking.',
             'OK'
           );
         }
 
-        // Trigger immediate metrics update
+        // Clear session and show "No Session"
+        currentSession = null;
+        statusBar.update(null, planConfig);
+        if (popupPanel.isOpen()) {
+          popupPanel.showNoSession();
+        }
+
+        // Trigger immediate metrics update to check for new session
         setTimeout(() => updateMetrics(), 100);
       } else {
         statusBar.update(updatedSession, planConfig);
