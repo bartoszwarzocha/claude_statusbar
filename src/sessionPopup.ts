@@ -19,7 +19,14 @@ export class SessionPopupPanel {
    */
   public show(session: SessionMetrics | null, planConfig: PlanConfig) {
     if (!session) {
-      vscode.window.showInformationMessage('No active Claude Code session found');
+      // If panel exists, update it to show "no session" state
+      if (this.panel) {
+        this.panel.reveal();
+        this.showNoSession();
+      } else {
+        // No panel and no session - just show info message
+        vscode.window.showInformationMessage('No active Claude Code session found');
+      }
       return;
     }
 
@@ -418,6 +425,11 @@ export class SessionPopupPanel {
             const costPercent = (session.totalCost / session.costLimit) * 100;
             const messagePercent = (session.messageCount / session.messageLimit) * 100;
 
+            // Update session times (CRITICAL: this fixes stale times after laptop sleep/resume)
+            const startTime = new Date(session.startTime).toLocaleString();
+            const endTime = new Date(session.sessionEndTime).toLocaleString();
+            updateValue('session-times', 'Started: ' + startTime + ' • Ends: ' + endTime);
+
             // Token usage
             updateProgress('token', session.totalTokens.toLocaleString(), planConfig.tokenLimit.toLocaleString(), tokenPercent, 'tokens');
             updateValue('input-tokens', session.inputTokens.toLocaleString());
@@ -616,7 +628,7 @@ export class SessionPopupPanel {
             <div class="progress-fill" id="time-progress-fill" style="width: ${timePercent}%; background-color: #60a5fa;">
             </div>
         </div>
-        <div class="info-label">Started: ${session.startTime.toLocaleString()} • Ends: ${session.sessionEndTime.toLocaleString()}</div>
+        <div class="info-label" id="session-times">Started: ${session.startTime.toLocaleString()} • Ends: ${session.sessionEndTime.toLocaleString()}</div>
     </div>
 
     <div class="section-header" onclick="toggleSection('token-details')">
