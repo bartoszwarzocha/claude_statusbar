@@ -4,197 +4,177 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A VS Code extension that displays Claude Code usage statistics in the status bar. The extension monitors token consumption, costs, message counts, and session timers in real-time.
+A VS Code extension that displays Claude Code usage in the status bar: real 5-hour and weekly limit
+usage, cost, tokens, messages and a session countdown.
 
-**Key Requirements:**
-- Display format: `Reset: 00:00:00 | C: 12.56$/35.00$ | T: 65489/88000 | M: 255/450`
-  - Reset: Countdown timer to session reset
-  - C: Current cost vs limit
-  - T: Token usage vs limit
-  - M: Message count vs limit
-- Hover popup: Detailed progress bars with percentages, per-minute consumption rates for tokens and costs
-- Configuration: Two parameters only - 1) Claude Code plan, 2) refresh frequency
+**Status bar format** depends on what data is available:
 
-**Architecture Inspiration:**
-- GUI design: Based on [claude-usage-monitor](https://github.com/yahyashareef48/claude-usage-monitor) (local: `/mnt/e/AI/claude-usage-monitor/`)
-- Calculation logic: Based on [Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor)
-- **Critical:** Use accurate calculations from Claude Code Usage Monitor, NOT the GUI reference which calculates incorrectly
+```
+Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34          bridge enabled
+Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70         bridge disabled, no budgets
+```
+
+`T` and `M` show a percentage instead of a raw value when the user sets a budget, and are omitted
+entirely while the real limits are shown.
+
+**Panel** (click the status bar): session countdown, a Usage Limits section, and one section each for
+tokens, cost and messages, plus collapsible breakdowns.
+
+## The two things most likely to be got wrong
+
+**1. There is no such thing as a token limit.** Anthropic does not publish token or message quotas.
+Real consumption is weighted by model and effort level, enforced over a 5-hour window plus weekly
+windows (Max plans have two: all models, and Sonnet-only), and the 5-hour limits were doubled in May
+2026. Earlier versions of this extension divided usage by a hard-coded 88,000 for Max5; a routine
+session measures ~460,000 tokens in one window, so that produced "525%" and a permanently red status
+bar while nothing was actually blocked.
+
+Never reintroduce per-plan token/cost/message limits. Budgets are opt-in pacing targets the user sets.
+
+**2. Authoritative usage comes from Claude Code, not from arithmetic.** The real percentages live in
+`rateLimits.ts` - see below. Locally computed tokens and cost are accurate measurements, but they
+cannot answer "how close am I to being cut off".
 
 ## Development Commands
 
 ```bash
-# Install dependencies
-npm install
-
-# Development build with type checking and linting
-npm run compile
-
-# Watch mode for development (runs both esbuild and tsc watchers in parallel)
-npm run watch
-
-# Production build
-npm run package
-
-# Type checking only
-npm run check-types
-
-# Linting only
-npm run lint
-
-# Run tests
-npm test
+npm install            # dependencies
+npm run compile        # check-types + lint + build
+npm run watch          # esbuild and tsc watchers in parallel
+npm run package        # production build
+npm run check-types    # tsc --noEmit
+npm run lint           # eslint src
+npx @vscode/vsce package   # emits the .vsix
 ```
 
 ## Core Architecture
 
-### Data Flow
+### Data sources
 
-1. **Data Source**: Claude Code stores conversation data in JSONL files
-   - Windows: `%USERPROFILE%\.claude\projects\`
-   - macOS/Linux: `~/.claude/projects/` or `~/.config/claude/projects/`
-   - Environment variable: `CLAUDE_CONFIG_DIR`
+There are **two**, and they answer different questions.
 
-2. **File Structure**: Each project directory contains session files (`.jsonl`)
-   - Each line is a JSON object with message data
-   - Messages contain `usage` object with token counts
-   - Files use format: `{message: {...}, timestamp: "...", type: "..."}`
+**1. Transcript files** - what was consumed.
 
-3. **Session Calculation Logic**:
-   - **5-hour rolling windows**: Session starts from first message, expires 5 hours later
-   - Groups messages chronologically into 5-hour sets
-   - Only counts tokens within active session window
-   - Filters to today's messages only
+- Windows: `%USERPROFILE%\.claude\projects\`, macOS/Linux: `~/.claude/projects/`
+- Env override: `CLAUDE_CONFIG_DIR`
+- One `.jsonl` per session; each line a JSON object; assistant lines carry `message.usage`
 
-4. **Token Counting Rules** (CRITICAL - matches Claude Code's limits):
-   - ✅ Counts: `input_tokens` + `output_tokens`
-   - ❌ Excludes: `cache_creation_input_tokens` and `cache_read_input_tokens`
-   - See `sessionParser.ts:calculateTokensFromUsage()` for reference
+**2. The status line bridge** - how much of the plan is left.
 
-### Key Components
+Claude Code exposes `rate_limits.five_hour` / `.seven_day` (percentage used + reset timestamp) and
+`context_window.used_percentage` **only** in the JSON it pipes to a status line command. No hook
+receives them, and they are absent from the transcripts - both were checked, do not go looking again.
+So `rateLimits.ts` installs a small status line script that mirrors that JSON to
+`~/.claude/claude-statusbar-bridge.json`, which the extension reads and watches.
 
-**sessionParser.ts** - Parse JSONL files
-- `parseSessionFile()`: Read and parse Claude session files line-by-line
-- `calculateTokensFromUsage()`: Sum input + output tokens (excludes cache)
-- `extractSessionId()`: Extract session ID from filename
+The data exists only for Claude.ai Pro/Max sign-ins. With an API key, Bedrock or Google Cloud the
+field is simply absent - that is the `rateLimitsStatus: 'waiting'` state, not an error.
 
-**sessionCalculator.ts** - Calculate metrics
-- `calculateSessionMetrics()`: Main calculation function
-  - Deduplicates messages by ID across all files
-  - Groups into 5-hour sets starting from first message
-  - Finds active set overlapping with current time
-  - Calculates total tokens, burn rate, time remaining
-- `groupIntoFiveHourSets()`: Split messages into 5-hour windows
-- `calculateBurnRate()`: Tokens/minute over last 10 minutes
-- `formatTimeRemaining()`: Convert ms to "Xh Ym" format
-- `getStatusColor()`: Green <60%, Yellow 60-80%, Red >80%
+### Session windows
 
-**statusBar.ts** - Status bar UI
-- `StatusBarManager`: Manages VS Code status bar item
-- `update()`: Refresh display with current metrics
-- Color-coded backgrounds for warning/error states
-- Click command to open popup
+- 5-hour rolling windows, grouped from the first message, start truncated to the full hour
+- A new window starts when a message falls past the previous end, or after a >= 5h gap
+- **Do not filter to "since midnight".** A window starting at 22:00 legitimately spans the date
+  boundary; the old midnight cutoff silently dropped its first hours. History is a rolling
+  7-day + 5-hour window (weekly totals need the 7 days)
+- With the bridge active, the countdown uses the API-provided `resets_at` rather than start + 5h
 
-**extension.ts** - Main entry point
-- `activate()`: Initialize extension
-  - Find Claude data directories
-  - Set up polling (default 5 seconds)
-  - Register commands for plan selection
-  - Aggregate all messages from all projects/files
-- `updateMetrics()`: Periodic refresh function
-- `getClaudeDataPaths()`: Locate Claude data directories
+### Token counting for limits
 
-**types.ts** - TypeScript interfaces
-- `MessageUsage`: Token counts from single message
-- `ClaudeMessage`: Parsed message with timestamp, role, usage
-- `SessionMetrics`: Calculated session data (tokens, timing, burn rate)
-- `PlanConfig`: Plan type and token limit
+Only `input_tokens + output_tokens`. Cache tokens are excluded from limit accounting but **are**
+billed - see `sessionParser.ts:calculateLimitTokens()`.
 
-### Plan Limits
+### Key components
 
-| Plan | Token Limit | Cost Limit | Message Limit |
-|------|-------------|------------|---------------|
-| Pro | 19,000 | $18.00 | 250 |
-| Max5 | 88,000 | $35.00 | 1,000 |
-| Max20 | 220,000 | $140.00 | 2,000 |
-| Custom | 44,000 (default) | $50.00 | 250 |
+**pricing.ts** - per-model prices, not per-family
+- `MODEL_PRICING`: keyed by model-id prefix, matched longest-first so `claude-opus-4-5-20251101`
+  resolves before `claude-opus-4`
+- `getModelPricing()`: handles Sonnet 5 introductory pricing (until 2026-08-31) and fast mode
+- `splitCacheCreation()`: 5-minute vs 1-hour cache writes - **Claude Code writes 1-hour entries
+  almost exclusively and they cost 2x base input, not 1.25x**
+- `calculateMessageCost()`: all token categories + `inference_geo: "us"` 1.1x + web search
 
-**Custom Plan Notes:**
-- Default limits shown above
-- User can configure custom token limit only
-- Cost and message limits remain at default values
+**rateLimits.ts** - the bridge
+- `installBridge()` / `uninstallBridge()`: writes the status line script, backs up `settings.json`,
+  preserves any pre-existing status line by delegating to it
+- `readRateLimits()`: parses the snapshot; returns undefined when stale (>12h) or without windows
+- `getBridgeStatus()`: installed / wired into settings / delegate / snapshot age
 
-### Model Pricing (per million tokens)
+**sessionParser.ts** - `parseSessionFile()`, `extractUsage()` (cache split, speed, geo, server tools),
+`calculateLimitTokens()`
 
-| Model | Input | Output | Cache Creation | Cache Read |
-|-------|-------|--------|----------------|------------|
-| Opus | $15.00 | $75.00 | $18.75 | $1.50 |
-| Sonnet | $3.00 | $15.00 | $3.75 | $0.30 |
-| Haiku | $0.25 | $1.25 | $0.30 | $0.03 |
+**sessionCalculator.ts** - `calculateSessionMetrics()`: dedupe by `id:requestId`, group into 5-hour
+sets, pick the set overlapping now, aggregate tokens/cost/model/project, burn rates over 10 minutes
 
-**Supported Models:**
-- Opus: `claude-3-opus`, `claude-opus-4-20250514`
-- Sonnet: `claude-3-sonnet`, `claude-3-5-sonnet`, `claude-sonnet-4-20250514`, `claude-sonnet-4-5-20250929`
-- Haiku: `claude-3-haiku`, `claude-3-5-haiku`
+**statusBar.ts** - status bar text and tooltip; colour comes from the real limits when available,
+otherwise from a configured budget, otherwise nothing
 
-### Cost Calculation Formula
+**sessionPopup.ts** - the webview. Two rendering paths that must stay in sync:
+- server-side TypeScript for the initial HTML
+- mirrored JavaScript inside the page for live refreshes
+- `layoutKey()` decides between a full re-render and `postMessage`. The Usage Limits section and the
+  progress-vs-composition bar choice are baked into the markup, so a change there **must** re-render -
+  `postMessage` cannot create elements that are not in the DOM
 
-```
-Total Cost = (input_tokens / 1,000,000 × input_rate) +
-             (output_tokens / 1,000,000 × output_rate) +
-             (cache_creation_tokens / 1,000,000 × cache_creation_rate) +
-             (cache_read_tokens / 1,000,000 × cache_read_rate)
-```
+**extension.ts** - activation, polling, file watching, commands, settings migration
 
-**Important:** Unlike token limits, cache tokens ARE counted in cost calculations.
+### Pricing (USD per million tokens, verified 2026-07-26)
 
-### Build System
+| Model | Input | Output | Cache 5m | Cache 1h | Cache read |
+|---|---|---|---|---|---|
+| Fable 5 / Mythos 5 | $10 | $50 | $12.50 | $20 | $1.00 |
+| Opus 5 / 4.8 / 4.7 / 4.6 / 4.5 | $5 | $25 | $6.25 | $10 | $0.50 |
+| Opus 4.1 and earlier | $15 | $75 | $18.75 | $30 | $1.50 |
+| Sonnet 5 (to 2026-08-31) | $2 | $10 | $2.50 | $4 | $0.20 |
+| Sonnet 5 (from 2026-09-01) / 4.6 / 4.5 | $3 | $15 | $3.75 | $6 | $0.30 |
+| Haiku 4.5 | $1 | $5 | $1.25 | $2 | $0.10 |
 
-**esbuild** - Used for bundling (see esbuild.js)
-- Bundles TypeScript to single `dist/extension.js`
-- Minifies in production mode
-- External dependency: `vscode`
+Cache rates are fixed multipliers of base input: 1.25x (5m write), 2x (1h write), 0.1x (read).
+Source: https://platform.claude.com/docs/en/about-claude/pricing
 
-**npm-run-all** - Parallel script execution
-- `watch` script runs esbuild and tsc watchers simultaneously
-- Provides better development experience
+Fast mode reprices Opus 5 / 4.8 at $10/$50. Web search is $10 per 1,000 requests.
 
-### Extension Activation
+### Configuration
 
-- Activation event: `onStartupFinished`
-- Main entry: `dist/extension.js`
-- Custom icon font: `resources/Glyphter.woff` (character: `\005E`)
+| Setting | Default | Purpose |
+|---|---|---|
+| `tokenBudget` | `0` | Optional token pacing target; `0` = none |
+| `costBudget` | `0` | Optional USD target |
+| `messageBudget` | `0` | Optional message target |
+| `refreshInterval` | `5` | Poll seconds (1-60) |
+| `notifications.sessionEnded` | `true` | Notify when the countdown hits zero |
+| `showProjectName` | `false` | Project name in the panel header |
 
-### File Watching
+Removed in 0.5.0: `plan`, `customTokenLimit`, `customCostLimit`, `customMessageLimit`.
+**The old budget keys are still read as a fallback and migrated on first run - keep it that way.**
+The `setPlanPro` / `setPlanMax5` / `setPlanMax20` / `setPlanCustom` command IDs stay registered so
+existing keybindings do not break; they explain the change instead of doing nothing.
 
-Uses `chokidar` for monitoring JSONL file changes:
-- More reliable than Node.js fs.watch
-- Cross-platform compatibility
-- Detects file modifications in real-time
+### Build system
 
-## Critical Implementation Notes
+esbuild bundles to `dist/extension.js` (external: `vscode`); `npm-run-all` runs the watchers in
+parallel. Activation: `onStartupFinished`. Custom icon font: `resources/Glyphter.woff` (`\005E`).
+`chokidar` watches both the transcripts and the bridge snapshot.
 
-1. **Duplicate Message Handling**: Messages can appear in multiple files - must deduplicate by ID
-2. **Session Window Logic**: Start timer from FIRST message of the day, not just any message
-3. **Token Calculation**: Never count cache tokens toward limits - this is the most common error
-4. **Multi-Project Support**: Extension must scan ALL projects in Claude data directory
-5. **Time Filtering**: Only consider messages from current day (since midnight)
-6. **Burn Rate Window**: Calculate over last 10 minutes for accurate predictions
+## Implementation notes
 
-## Data Path Priority
+1. **Deduplicate** messages by `id:requestId`, keeping the first occurrence - streaming writes repeat
+2. **Scan every project** under the data directory, not just the current workspace
+3. **Do not re-parse everything on every tick.** Files are cached by mtime+size and anything untouched
+   for over a week is skipped unopened. A full pass measured 615 ms over 101 MB / 46 files, and it ran
+   every 5 seconds
+4. **Never invent a denominator.** With no budget, show the measured value - the panel then renders a
+   composition bar (what the value is made of) rather than an empty progress bar
+5. **Colours**: each model family has four shades so two models of the same family sitting next to
+   each other in a bar stay distinguishable; project colours are nudged apart on hash collisions
+6. **Backwards compatibility is a requirement**, not a nicety: migrate renamed settings, keep reading
+   the old keys, and keep retired command IDs registered
 
-1. `CLAUDE_CONFIG_DIR` environment variable
-2. `~/.config/claude/projects` (Linux/macOS)
-3. `~/.claude/projects` (fallback)
-4. User-configured override paths
+## Verifying changes
 
-## Expected Status Bar Format
+There is no test runner wired up for the webview. What has worked:
 
-```
-Reset: 3h 45m | C: 12.56$/35.00$ | T: 65489/88000 | M: 255/450
-```
-
-Hover popup should show:
-- Progress bars for tokens, cost, messages
-- Percentage values
-- Per-minute consumption rates (tokens/min, $/min)
-- Session start and end times
+- Render the popup with a stubbed `vscode` module and assert against the produced HTML
+- For live-refresh behaviour, extract the page `<script>` and execute it against a DOM stub - stub
+  `setInterval`, or the countdown keeps the Node process alive
+- Compare cost calculations against the real transcripts in `~/.claude/projects/`

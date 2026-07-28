@@ -6,3 +6,9 @@ node_modules
 .DS_Store
 *.log
 npm-debug.log*
+
+# Machine-local Claude Code permissions
+.claude/settings.local.json
+
+# Clipboard screenshots accidentally saved into the repo root
+Schowek_*

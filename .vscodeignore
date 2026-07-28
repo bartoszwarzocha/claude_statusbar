@@ -33,3 +33,10 @@ ALGORITHM.md
 npm-debug.log*
 .DS_Store
 *.log
+
+# Exclude accidental files (but keep resources folder)
+*.jpg
+!resources/*.jpg
+*.png
+!resources/*.png
+Schowek_*
