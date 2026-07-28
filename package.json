@@ -2,7 +2,7 @@
   "name": "claude-statusbar",
   "displayName": "Claude Code Status Bar Monitor",
   "description": "Real-time monitoring of Claude Code usage in VS Code status bar - tokens, costs, and messages",
-  "version": "0.2.2",
+  "version": "0.5.0",
   "publisher": "bartosz-warzocha",
   "icon": "resources/icon.png",
   "repository": {
@@ -42,24 +42,24 @@
         "title": "Claude: Show Usage Details"
       },
       {
-        "command": "claude-statusbar.setPlanPro",
-        "title": "Claude: Set Plan to Pro"
-      },
-      {
-        "command": "claude-statusbar.setPlanMax5",
-        "title": "Claude: Set Plan to Max5"
-      },
-      {
-        "command": "claude-statusbar.setPlanMax20",
-        "title": "Claude: Set Plan to Max20"
-      },
-      {
-        "command": "claude-statusbar.setPlanCustom",
-        "title": "Claude: Set Plan to Custom"
+        "command": "claude-statusbar.setBudgets",
+        "title": "Claude: Set Budgets"
       },
       {
         "command": "claude-statusbar.refresh",
         "title": "Claude: Refresh Usage Stats"
+      },
+      {
+        "command": "claude-statusbar.enableRealLimits",
+        "title": "Claude: Enable Real Usage Limits"
+      },
+      {
+        "command": "claude-statusbar.disableRealLimits",
+        "title": "Claude: Disable Real Usage Limits"
+      },
+      {
+        "command": "claude-statusbar.showLimitsStatus",
+        "title": "Claude: Show Usage Limits Bridge Status"
       }
     ],
     "icons": {
@@ -74,17 +74,23 @@
     "configuration": {
       "title": "Claude Status Bar",
       "properties": {
-        "claudeStatusBar.plan": {
-          "type": "string",
-          "enum": ["pro", "max5", "max20", "custom"],
-          "default": "max5",
-          "description": "Claude Code subscription plan"
-        },
-        "claudeStatusBar.customTokenLimit": {
+        "claudeStatusBar.tokenBudget": {
           "type": "number",
-          "default": 44000,
-          "minimum": 1000,
-          "description": "Custom token limit (only used when plan is set to 'custom')"
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Your own token budget for the 5-hour window (input + output, cache excluded). `0` means no budget: the value is shown without a percentage. This is a pacing target you choose — Anthropic does not publish token quotas. For the real limits run `Claude: Enable Real Usage Limits`."
+        },
+        "claudeStatusBar.costBudget": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Your own cost budget in USD for the 5-hour window. `0` means no budget."
+        },
+        "claudeStatusBar.messageBudget": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Your own message budget for the 5-hour window. `0` means no budget."
         },
         "claudeStatusBar.refreshInterval": {
           "type": "number",
@@ -97,6 +103,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show notification when session timer reaches zero"
+        },
+        "claudeStatusBar.showProjectName": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show workspace/project name in the statistics popup"
         }
       }
     }

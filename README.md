@@ -12,76 +12,143 @@ Reset: 03:45:12 | C: 35.9% | T: 74.4% | M: 25.5%
 ```
 
 **Status Bar Components:**
-- **Reset**: Countdown timer to session reset (HH:MM:SS)
-- **C**: Cost usage percentage
-- **T**: Token usage percentage
-- **M**: Message count percentage
+- **Reset** — countdown to the session reset (HH:MM:SS)
+- **5h** / **7d** — percentage of the real 5-hour and weekly limits used, when
+  [enabled](#real-usage-limits-recommended)
+- **C** — session cost, with `/budget` and a percentage if you set one
+- **T** — tokens used (input + output), as a percentage if you set a budget
+- **M** — messages, as a percentage if you set a budget
 
-**Color Indicators:**
-- ⚪ Neutral: < 75% of token limit
-- 🟠 Orange: 75-89% of token limit
-- 🔴 Red: ≥ 90% of token limit
+`T` and `M` are omitted while the real limits are shown, to keep the bar short.
 
-**Hover over the status bar** to see a quick tooltip with session timing and key metrics:
+**Colour indicators** apply to whichever signal is most reliable — the real
+limits first, otherwise your own budget:
+- Neutral: below 60%
+- Orange: 60-79%
+- Red: 80% and above
 
-<div align="center">
-  <img src="resources/tooltip.jpg" alt="Status Bar Tooltip" width="400">
-  <p><em>Tooltip showing quick overview: session timer, token usage, cost, message count, and burn rates</em></p>
-</div>
+**Hover over the status bar** for a tooltip with the usage limits, session timing,
+cost (session and last 7 days), token breakdown including cache, and burn rates.
 
 ## 🎨 Detailed Popup & Advanced Analytics
 
-Click the status bar to open the main popup with comprehensive metrics:
+Click the status bar to open the statistics panel.
 
-<div align="center">
-  <img src="resources/main_popup.jpg" alt="Main Detailed Popup" width="500">
-  <p><em>Main popup view with session timer, token usage, cost tracking, and message count with visual progress bars</em></p>
-</div>
+**Session Timer** — countdown to the reset, with the window's start and end times.
 
-**Main Popup includes:**
-- Progress bars for tokens, cost, and messages
-- Percentage indicators
-- Per-minute consumption rates (tokens/min, $/min, messages/min)
-- Session timing information
-- Token breakdown (input, output, cache creation, cache read)
+**Usage Limits** — two progress bars with the real percentage of the 5-hour and
+weekly windows consumed and the exact reset times. See
+[Real usage limits](#real-usage-limits-recommended).
 
-**Advanced Analytics** - Click "More..." buttons to access detailed breakdowns:
+**Token Usage, Cost Usage, Message Count** — each section shows one bar:
+- a **progress bar** with a percentage, when you have set a budget for that metric
+- otherwise a **composition bar** showing what the value is made of — tokens by
+  model, cost by model, messages by project — with a legend underneath
 
-<div align="center">
-  <img src="resources/extra_info.jpg" alt="Advanced Analytics View" width="600">
-  <p><em>Expanded view showing token breakdown by component, usage by model (Opus/Sonnet/Haiku), and usage by project</em></p>
-</div>
+The composition bar exists because there is no honest denominator to divide by
+without a budget; it fills the same slot with real information instead of an
+invented percentage.
 
-**Extended information includes:**
-- **Token Components**: Individual counts of input, output, cache creation, and cache read tokens
-- **Burn Rate Analysis**: Real-time token and cost consumption rates (tokens/min, $/min)
-- **Model Breakdown**: Pie chart showing which models (Opus, Sonnet, Haiku) consumed the most tokens
-- **Project Breakdown**: Visualization of token usage across different Claude projects
+**Advanced Analytics** — the "More..." toggles expand each section:
+- **Token Components**: input, output, cache creation (split by 5-minute and
+  1-hour writes) and cache read
+- **Burn Rates**: tokens/min, $/min, messages/min
+- **Usage by Project**: token distribution across your Claude projects
+- **Usage by Model**: shown here when a token budget is set (otherwise it is
+  already the composition bar above)
+
+## Real usage limits (recommended)
+
+Claude Code reports the **actual** percentage of your 5-hour and weekly limits you
+have consumed, together with the exact reset timestamps. This is the only figure
+that answers "how close am I to being cut off" — token and cost counts cannot,
+because real consumption is weighted by model and effort level.
+
+**To turn it on:** open the statistics popup (click the status bar) and press
+**Turn on** in the *Usage Limits* section. The command palette equivalent is
+`Claude: Enable Real Usage Limits`.
+
+**What you get** — three tiles in the popup, plus `5h` and `7d` segments in the
+status bar:
+
+```
+┌──────────────────┬──────────────────┬──────────────────┐
+│     CONTEXT      │  5-HOUR WINDOW   │   7-DAY WINDOW   │
+│       53%        │        6%        │       88%        │
+│ current session  │  resets 14:35    │ resets Fri 20:01 │
+│ ▁▁▁▁▁▁▁▁         │ ▁▁               │ ▁▁▁▁▁▁▁▁▁▁▁▁▁    │
+└──────────────────┴──────────────────┴──────────────────┘
+```
+
+Numbers are green below 60%, amber to 80%, red above. A value Claude Code does not
+report shows a dash — context is briefly absent right after `/compact`.
+
+**How it works.** That data is only exposed in the JSON Claude Code pipes to a
+status line command — no hook receives it, and it is not written to the transcript
+files. So the extension installs a small status line script that mirrors the JSON
+to a file and reads it from there.
+
+- Works for Claude.ai Pro/Max subscribers (the data does not exist for API-key
+  usage), and appears after the first response in a session.
+- If you already use a status line, it keeps working — the bridge calls it with
+  the same input and prints its output.
+- `Claude: Disable Real Usage Limits` removes the script and restores your
+  previous status line. `~/.claude/settings.json` is backed up before it is
+  modified.
+- `Claude: Show Usage Limits Bridge Status` reports what is installed and what the
+  last reading contained.
+- Requires `node` on your `PATH`.
+- If Claude Code signs in with an **API key**, Amazon Bedrock or Google Cloud,
+  there are no 5-hour or weekly windows at all — usage is billed per token. The
+  section then says so and points you at the cost figures instead.
+
+Without the bridge the extension still works — you get accurate token and cost
+figures, just no percentage of your plan.
 
 ## ⚙️ Configuration
-
-Simple configuration with just two settings:
-1. **Plan**: Choose from Pro, Max5, Max20, or Custom
-2. **Refresh Interval**: Update frequency (1-60 seconds)
 
 ### VS Code Settings
 
 ```json
 {
-  "claudeStatusBar.plan": "max5",              // pro, max5, max20, or custom
-  "claudeStatusBar.customTokenLimit": 44000,   // Only for custom plan
-  "claudeStatusBar.refreshInterval": 5          // 1-60 seconds
+  "claudeStatusBar.tokenBudget": 0,            // your token target; 0 = none
+  "claudeStatusBar.costBudget": 0,             // your USD target;   0 = none
+  "claudeStatusBar.messageBudget": 0,          // your message target; 0 = none
+  "claudeStatusBar.refreshInterval": 5,        // 1-60 seconds
+  "claudeStatusBar.showProjectName": false,    // project name in the panel header
+  "claudeStatusBar.notifications.sessionEnded": true
 }
 ```
 
-### Plan Limits
 
-| Plan | Token Limit | Cost Limit | Message Limit |
-|------|-------------|------------|---------------|
-| **Pro** | 19,000 | $18.00 | 250 |
-| **Max5** | 88,000 | $35.00 | 1,000 |
-| **Max20** | 220,000 | $140.00 | 2,000 |
-| **Custom** | User-defined | $50.00 | 250 |
+### Budgets are opt-in
+
+**No budgets are applied by default.** Tokens, cost, and messages are shown as
+plain measured values, because Anthropic does not publish token or message quotas
+and there is nothing honest to divide by: real consumption is weighted by model
+and effort level, enforced over a 5-hour window plus weekly windows (Max plans
+have two — all models, and Sonnet only), and the 5-hour limits were doubled in
+May 2026. The real percentages come from the bridge above.
+
+If you want a self-imposed pacing target, set one — the status bar then shows a
+percentage and warning colours against *your* number, and the popup switches that
+metric from a composition bar to a progress bar:
+
+```json
+{
+  "claudeStatusBar.tokenBudget": 200000,
+  "claudeStatusBar.costBudget": 40,
+  "claudeStatusBar.messageBudget": 500
+}
+```
+
+Or run `Claude: Set Budgets`, which asks for all three. `0` (or an empty answer)
+means no budget for that metric.
+
+> Upgrading from 0.4.x or earlier: `customTokenLimit`, `customCostLimit` and
+> `customMessageLimit` are migrated to the names above automatically, and are still
+> read if the migration never ran. The `claudeStatusBar.plan` setting was removed —
+> plan presets carried token limits Anthropic never published.
 
 ## Installation
 
@@ -98,8 +165,8 @@ Or visit the [VS Code Marketplace page](https://marketplace.visualstudio.com/ite
 
 ```bash
 npm install
-npm run package
-code --install-extension claude-statusbar-0.1.0.vsix
+npx @vscode/vsce package          # runs the production build, emits the .vsix
+code --install-extension claude-statusbar-*.vsix
 ```
 
 ## Usage & Commands
@@ -107,10 +174,10 @@ code --install-extension claude-statusbar-0.1.0.vsix
 Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 - `Claude: Show Usage Details` - Open detailed metrics popup
-- `Claude: Set Plan to Pro` - Switch to Pro plan (19k tokens)
-- `Claude: Set Plan to Max5` - Switch to Max5 plan (88k tokens)
-- `Claude: Set Plan to Max20` - Switch to Max20 plan (220k tokens)
-- `Claude: Set Plan to Custom` - Set custom token limit
+- `Claude: Enable Real Usage Limits` - Read the actual 5-hour / weekly usage from Claude Code
+- `Claude: Disable Real Usage Limits` - Remove the bridge, restore your status line
+- `Claude: Show Usage Limits Bridge Status` - Diagnose the bridge in the output channel
+- `Claude: Set Budgets` - Set your token, cost and message targets
 - `Claude: Refresh Usage Stats` - Force refresh metrics
 
 ## How It Works
@@ -126,12 +193,19 @@ The extension monitors these files for changes and calculates metrics in real-ti
 
 ### Session Windows
 
-Claude Code uses **5-hour rolling sessions**. The extension:
+Claude Code uses **5-hour rolling sessions**, plus weekly windows. The extension:
 
 1. Detects your first message timestamp
-2. Calculates session expiry (5 hours later)
+2. Calculates session expiry (5 hours later) — or, with the bridge enabled, uses
+   the exact reset timestamp reported by Claude Code
 3. Tracks usage within the active window
-4. Automatically resets when session expires
+4. Automatically resets when the session expires
+
+Session windows are tracked on a rolling basis and are **not** cut at midnight, so
+a window that starts at 22:00 keeps its full history past the date boundary.
+
+Only files modified within the last week are read, and parsed results are cached by
+modification time, so a large history does not cost CPU on every refresh.
 
 ### Token Calculation
 
@@ -149,15 +223,32 @@ Claude Code uses **5-hour rolling sessions**. The extension:
 
 ### Cost Calculation
 
-Costs are calculated using model-specific pricing:
+Costs use per-model published pricing (USD per million tokens), verified against
+[Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+on 2026-07-26. Note that pricing is per **model version**, not per family — Opus
+4.5+ costs a third of what Opus 4.1 did:
 
-| Model | Input | Output | Cache Creation | Cache Read |
-|-------|-------|--------|----------------|------------|
-| **Opus** | $15.00/M | $75.00/M | $18.75/M | $1.50/M |
-| **Sonnet** | $3.00/M | $15.00/M | $3.75/M | $0.30/M |
-| **Haiku** | $0.25/M | $1.25/M | $0.30/M | $0.03/M |
+| Model | Input | Output | Cache write 5m | Cache write 1h | Cache read |
+|-------|-------|--------|----------------|----------------|------------|
+| **Fable 5 / Mythos 5** | $10.00 | $50.00 | $12.50 | $20.00 | $1.00 |
+| **Opus 5 / 4.8 / 4.7 / 4.6 / 4.5** | $5.00 | $25.00 | $6.25 | $10.00 | $0.50 |
+| **Opus 4.1 and earlier** | $15.00 | $75.00 | $18.75 | $30.00 | $1.50 |
+| **Sonnet 5** (to 2026‑08‑31) | $2.00 | $10.00 | $2.50 | $4.00 | $0.20 |
+| **Sonnet 5** (from 2026‑09‑01) / 4.6 / 4.5 | $3.00 | $15.00 | $3.75 | $6.00 | $0.30 |
+| **Haiku 4.5** | $1.00 | $5.00 | $1.25 | $2.00 | $0.10 |
 
-> Pricing per million tokens
+Cache rates are fixed multipliers of the base input price: 1.25x for a 5-minute
+cache write, **2x for a 1-hour write**, and 0.1x for a cache read. Claude Code
+writes 1-hour cache entries almost exclusively, so treating them as 5-minute
+writes understates cache cost by 37.5%.
+
+Also accounted for:
+
+- `speed: "fast"` — fast mode reprices Opus 5 / Opus 4.8 at $10/$50
+- `inference_geo: "us"` — US-only inference applies a 1.1x multiplier
+- Web search — $10 per 1,000 requests
+- Model ids not in the table fall back to their family's rates and log a warning,
+  so a newly released model is approximated rather than mispriced as Sonnet
 
 ## Privacy
 

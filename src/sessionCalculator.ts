@@ -1,13 +1,30 @@
 import * as vscode from 'vscode';
-import { ClaudeMessage, SessionMetrics, PlanConfig } from './types';
+import {
+  ClaudeMessage,
+  SessionMetrics,
+  PlanConfig,
+  ModelTier,
+  RateLimitSnapshot,
+} from './types';
 import { calculateLimitTokens } from './sessionParser';
-import { calculateMessageCost, getModelTier } from './pricing';
+import { calculateMessageCost, getModelTier, normalizeModelId, splitCacheCreation } from './pricing';
 
 const SESSION_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours in milliseconds
 const BURN_RATE_WINDOW_MS = 10 * 60 * 1000; // Last 10 minutes for burn rate
+/**
+ * How far back messages are kept. Must cover the 7-day rate limit window, and
+ * must NOT be "since midnight" - a 5-hour session that starts at 22:00 spans
+ * midnight, and truncating at the date boundary silently drops its first hours.
+ */
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const HISTORY_WINDOW_MS = WEEK_MS + SESSION_DURATION_MS;
+
+function emptyModelBreakdown(): Record<ModelTier, number> {
+  return { fable: 0, opus: 0, sonnet: 0, haiku: 0, unknown: 0 };
+}
 
 /**
- * Round timestamp to nearest full hour in UTC
+ * Truncate timestamp down to the full hour
  * Logic from Maciek-roboblog/Claude-Code-Usage-Monitor
  */
 function roundToNearestHour(date: Date): Date {
@@ -104,7 +121,9 @@ export function calculateSessionMetrics(
   messages: ClaudeMessage[],
   sessionId: string,
   planConfig: PlanConfig,
-  outputChannel?: vscode.OutputChannel
+  outputChannel?: vscode.OutputChannel,
+  rateLimits?: RateLimitSnapshot,
+  rateLimitsStatus: 'off' | 'waiting' | 'live' = 'off'
 ): SessionMetrics | null {
   if (messages.length === 0) {
     return null;
@@ -132,17 +151,37 @@ export function calculateSessionMetrics(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  // Step 3: Filter to today's messages only (from midnight of current day)
-  // This ensures that sessions don't include messages from previous days
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0); // Set to midnight of today
+  // Step 3: Keep a rolling history window.
+  //
+  // This deliberately does NOT cut at midnight: a 5-hour session started at
+  // 22:00 continues past the date boundary, and a midnight cutoff would drop
+  // its first hours from the active window. The window also covers 7 days so
+  // weekly usage can be reported.
+  const historyStart = new Date(now.getTime() - HISTORY_WINDOW_MS);
+  const weekStart = new Date(now.getTime() - WEEK_MS);
 
   const recentMessages = sortedMessages.filter((msg) => {
     const msgTime = new Date(msg.timestamp);
-    return msgTime >= todayStart;
+    return msgTime >= historyStart;
   });
 
-  outputChannel?.appendLine(`Sorted: ${sortedMessages.length}, Today's messages (since ${todayStart.toLocaleTimeString()}): ${recentMessages.length}`);
+  outputChannel?.appendLine(
+    `Sorted: ${sortedMessages.length}, In history window (since ${historyStart.toLocaleString()}): ${recentMessages.length}`
+  );
+
+  // Rolling 7-day totals (used when no authoritative rate limit data exists)
+  let weekTokens = 0;
+  let weekCost = 0;
+  for (const msg of recentMessages) {
+    if (!msg.usage) {
+      continue;
+    }
+    if (new Date(msg.timestamp) < weekStart) {
+      continue;
+    }
+    weekTokens += calculateLimitTokens(msg.usage);
+    weekCost += calculateMessageCost(msg.usage, msg.model);
+  }
 
   if (recentMessages.length === 0) {
     return null; // No recent messages
@@ -194,27 +233,38 @@ export function calculateSessionMetrics(
   const startTime = activeSet.startTime;
   const lastMessageTime = activeSet.lastMessageTime;
   const sessionEndTime = activeSet.endTime;
-  const timeRemaining = Math.max(0, sessionEndTime.getTime() - now.getTime());
+
+  // Prefer the real reset timestamp reported by Claude Code over our own
+  // start+5h estimate. The API-provided value accounts for how the window was
+  // actually anchored server-side.
+  const effectiveEndTime = rateLimits?.fiveHour?.resetsAt ?? sessionEndTime;
+  const effectiveTimeRemaining = Math.max(0, effectiveEndTime.getTime() - now.getTime());
+  const timeRemaining = effectiveTimeRemaining;
   const isActive = timeRemaining > 0;
 
   // Calculate token totals and costs for messages in this window
   let totalTokens = 0;
   let inputTokens = 0;
   let cacheCreationTokens = 0;
+  let cacheCreation5mTokens = 0;
+  let cacheCreation1hTokens = 0;
   let cacheReadTokens = 0;
   let outputTokens = 0;
   let totalCost = 0;
   let messageCount = 0;
+  let webSearchRequests = 0;
 
-  // Breakdown by model tier
-  const modelBreakdown = {
-    opus: 0,
-    sonnet: 0,
-    haiku: 0,
-  };
+  // Breakdown by model family
+  const modelBreakdown = emptyModelBreakdown();
+
+  // Cost breakdown by concrete model id
+  const costByModel: Record<string, number> = {};
 
   // Breakdown by project
   const projectBreakdown: Record<string, number> = {};
+
+  // Message counts per project (real counts, not token shares)
+  const messagesByProject: Record<string, number> = {};
 
   const seenIds = new Set<string>();
 
@@ -239,16 +289,28 @@ export function calculateSessionMetrics(
       cacheReadTokens += message.usage.cache_read_input_tokens || 0;
       outputTokens += message.usage.output_tokens;
 
+      const { write5m, write1h } = splitCacheCreation(message.usage);
+      cacheCreation5mTokens += write5m;
+      cacheCreation1hTokens += write1h;
+      webSearchRequests += message.usage.server_tool_use?.web_search_requests || 0;
+
       const msgCost = calculateMessageCost(message.usage, message.model);
       totalCost += msgCost;
 
-      // Aggregate by model tier
+      // Aggregate by model family
       const modelTier = getModelTier(message.model);
       modelBreakdown[modelTier] += msgTokens;
+
+      // Aggregate cost by concrete model id
+      if (message.model) {
+        const modelKey = normalizeModelId(message.model);
+        costByModel[modelKey] = (costByModel[modelKey] || 0) + msgCost;
+      }
 
       // Aggregate by project
       if (message.projectName) {
         projectBreakdown[message.projectName] = (projectBreakdown[message.projectName] || 0) + msgTokens;
+        messagesByProject[message.projectName] = (messagesByProject[message.projectName] || 0) + 1;
       }
 
       outputChannel?.appendLine(
@@ -283,18 +345,47 @@ export function calculateSessionMetrics(
   outputChannel?.appendLine(`  Session: ${startTime.toLocaleTimeString()} - ${sessionEndTime.toLocaleTimeString()}`);
   outputChannel?.appendLine(`  Messages in session: ${sessionMessages.length}`);
   outputChannel?.appendLine(`  Messages counted: ${messageCount}`);
-  outputChannel?.appendLine(`  Input tokens: ${inputTokens.toLocaleString()}`);
-  outputChannel?.appendLine(`  Output tokens: ${outputTokens.toLocaleString()}`);
-  outputChannel?.appendLine(`  Cache creation: ${cacheCreationTokens.toLocaleString()} (NOT counted toward limit)`);
-  outputChannel?.appendLine(`  Cache read: ${cacheReadTokens.toLocaleString()} (NOT counted toward limit)`);
+  outputChannel?.appendLine(`  Input tokens: ${inputTokens.toLocaleString()} (counted toward limit)`);
+  outputChannel?.appendLine(`  Output tokens: ${outputTokens.toLocaleString()} (counted toward limit)`);
+  outputChannel?.appendLine(`  Cache creation: ${cacheCreationTokens.toLocaleString()} (NOT counted toward limit, but costs money)`);
+  outputChannel?.appendLine(`    - 5m writes: ${cacheCreation5mTokens.toLocaleString()} (billed at 1.25x input)`);
+  outputChannel?.appendLine(`    - 1h writes: ${cacheCreation1hTokens.toLocaleString()} (billed at 2x input)`);
+  outputChannel?.appendLine(`  Cache read: ${cacheReadTokens.toLocaleString()} (NOT counted toward limit, but costs money)`);
   outputChannel?.appendLine(`  TOTAL (toward limit): ${totalTokens.toLocaleString()} = ${inputTokens.toLocaleString()} + ${outputTokens.toLocaleString()}`);
-  outputChannel?.appendLine(`  Cost: $${totalCost.toFixed(2)}`);
+  outputChannel?.appendLine(`  Cost: $${totalCost.toFixed(2)} (includes ALL token types)`);
   outputChannel?.appendLine(`  Time remaining: ${Math.floor(timeRemaining / 60000)} minutes`);
   outputChannel?.appendLine('');
   outputChannel?.appendLine('MODEL BREAKDOWN:');
-  outputChannel?.appendLine(`  Opus: ${modelBreakdown.opus.toLocaleString()} tokens (${((modelBreakdown.opus / totalTokens) * 100).toFixed(1)}%)`);
-  outputChannel?.appendLine(`  Sonnet: ${modelBreakdown.sonnet.toLocaleString()} tokens (${((modelBreakdown.sonnet / totalTokens) * 100).toFixed(1)}%)`);
-  outputChannel?.appendLine(`  Haiku: ${modelBreakdown.haiku.toLocaleString()} tokens (${((modelBreakdown.haiku / totalTokens) * 100).toFixed(1)}%)`);
+  (Object.keys(modelBreakdown) as ModelTier[]).forEach((tier) => {
+    const tokens = modelBreakdown[tier];
+    if (tokens > 0) {
+      const label = tier.charAt(0).toUpperCase() + tier.slice(1);
+      outputChannel?.appendLine(
+        `  ${label}: ${tokens.toLocaleString()} tokens (${((tokens / totalTokens) * 100).toFixed(1)}%)`
+      );
+    }
+  });
+  outputChannel?.appendLine('');
+  outputChannel?.appendLine('COST BY MODEL:');
+  Object.entries(costByModel)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([model, cost]) => {
+      outputChannel?.appendLine(`  ${model}: $${cost.toFixed(2)}`);
+    });
+  if (rateLimits) {
+    outputChannel?.appendLine('');
+    outputChannel?.appendLine('RATE LIMITS (authoritative, from Claude Code):');
+    if (rateLimits.fiveHour) {
+      outputChannel?.appendLine(
+        `  5-hour: ${rateLimits.fiveHour.usedPercent.toFixed(1)}% used, resets ${rateLimits.fiveHour.resetsAt.toLocaleString()}`
+      );
+    }
+    if (rateLimits.sevenDay) {
+      outputChannel?.appendLine(
+        `  7-day: ${rateLimits.sevenDay.usedPercent.toFixed(1)}% used, resets ${rateLimits.sevenDay.resetsAt.toLocaleString()}`
+      );
+    }
+  }
   outputChannel?.appendLine('');
   outputChannel?.appendLine('PROJECT BREAKDOWN:');
   Object.entries(projectBreakdown)
@@ -307,23 +398,32 @@ export function calculateSessionMetrics(
     totalTokens,
     inputTokens,
     cacheCreationTokens,
+    cacheCreation5mTokens,
+    cacheCreation1hTokens,
     cacheReadTokens,
     outputTokens,
     totalCost,
     costLimit: planConfig.costLimit,
+    webSearchRequests,
     messageCount,
     messageLimit: planConfig.messageLimit,
     sessionId,
     startTime,
     lastMessageTime,
-    sessionEndTime,
-    timeRemaining,
-    isActive,
+    sessionEndTime: effectiveEndTime,
+    timeRemaining: effectiveTimeRemaining,
+    isActive: effectiveTimeRemaining > 0,
     tokenBurnRate,
     costBurnRate,
     messageBurnRate,
     modelBreakdown,
+    costByModel,
     projectBreakdown,
+    messagesByProject,
+    rateLimits,
+    rateLimitsStatus,
+    weekTokens,
+    weekCost,
   };
 }
 

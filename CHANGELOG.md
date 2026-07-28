@@ -7,6 +7,170 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-07-28
+
+Configuration audit: after 0.4.x removed the fabricated plan limits, the `plan`
+setting and its commands no longer affected anything. Everything that had lost its
+purpose is gone, and the remaining settings are named for what they actually are.
+
+### Removed
+- **`claudeStatusBar.plan`.** With presets carrying no budgets and no longer gating
+  the Usage Limits section, it only printed a label. The "Plan" tile in the popup is
+  replaced by "Last 7 days" cost.
+- Commands `Set Plan to Pro` / `Max5` / `Max20` from the palette - they changed
+  nothing but that label. **The command IDs remain registered**, so an existing
+  keybinding does not fail with "command not found": it explains the change and
+  offers to set budgets or enable the real limits.
+- Dead code: `LEGACY_PLAN_BUDGETS`, `PLAN_LIMITS`, `formatTokenCount`, and the
+  `lastRateLimits` variable, which was written twice and never read.
+
+### Changed
+- **Settings renamed** to match what they are - targets you choose, not limits:
+  `customTokenLimit` → `tokenBudget`, `customCostLimit` → `costBudget`,
+  `customMessageLimit` → `messageBudget`. Defaults are now `0` (no budget).
+- `Claude: Set Plan to Custom` → **`Claude: Set Budgets`**, which asks for all three
+  in one flow; an empty answer clears that budget.
+
+### Fixed
+- **Adjacent composition-bar segments could be exactly the same colour.** Colours
+  came from the model family, so Opus 5 next to Opus 4.8 rendered as one
+  indistinguishable block. Each family now has four shades and consecutive models
+  take the next one. Project colours are nudged apart when two names hash to nearly
+  the same hue, and the "Usage by Project" chart uses the same palette so a project
+  looks identical everywhere in the panel.
+
+### Compatibility
+- Budgets written by an earlier version are migrated to the new keys on first run.
+  The old keys are also still **read as a fallback**, so a configuration that never
+  went through the migration (synced settings, fresh machine, manual edit) keeps
+  working. Old values are never deleted, and the migration never overwrites a value
+  already set under the new key.
+- The retired plan presets are deliberately **not** converted into budgets: they were
+  never real quotas, and restoring them would bring back percentages like "525%".
+
+---
+
+## [0.4.1] - 2026-07-28
+
+GUI follow-up to 0.4.0: removing the fabricated token limit left progress bars with
+nothing to fill, which looked broken.
+
+### Fixed
+- **Progress bars with no target rendered as an empty track with a dash beside it.**
+  The bar is now hidden and its vertical margin collapses with it, so a section
+  header no longer floats above its content.
+- **The Usage Limits bars never appeared in an already-open statistics panel.**
+  Pressing **Turn on** installed the bridge correctly and the status bar picked the
+  data up, but the panel kept showing the placeholder: it refreshes through
+  `postMessage`, and the bar elements were not in the DOM to update. The panel now
+  re-renders when the section changes shape - bridge starts or stops reporting, a
+  budget appears or disappears, the setting is toggled, or the plan changes - and
+  keeps using `postMessage` for plain value updates so there is no flicker.
+
+### Added
+- **Usage Limits shown as three tiles** - Context, 5-hour window, 7-day window -
+  each with a large threshold-coloured percentage, the reset time, and a thin bar.
+  Context usage comes from the same bridge snapshot and was previously unused. A
+  value Claude Code does not report (context is absent right after `/compact`)
+  shows a dash and keeps its tile, so the three-column grid never collapses.
+- **Composition bars.** A metric with no budget now shows what its value is made of
+  instead of an empty slot: tokens by model, cost by model, messages by project,
+  each with a legend. Same slot and height as a progress bar, so sections look
+  consistent either way. When a budget is set, the progress bar is shown as before.
+- Per-project message counts, which the Message Count composition bar needs.
+- A third state for the Usage Limits section, for logins that have no such
+  windows. When the bridge runs but Claude Code reports nothing - an API key,
+  Amazon Bedrock or Google Cloud sign-in - the section says so and points at the
+  cost figures, instead of leaving a "Turn on" button that would change nothing.
+- A **Turn on** button in the Usage Limits section, replacing a wall of text that
+  never said where to click. It runs the setup straight from the panel.
+
+### Changed
+- The Usage Limits section is always visible, on every plan, and states that it
+  needs a Pro or Max subscription. It is the only authoritative source of "how much
+  of my plan is left", so there is no setting to hide it any more.
+- "Usage by Model" moved out of the collapsed details when it is already the
+  composition bar above, to avoid showing the same chart twice.
+- Tooltip section renamed back to "Session Timer" to match 0.3.0.
+- README: removed the screenshots (they predate the GUI rework) and rewrote the
+  status bar and popup descriptions to match what the extension actually renders.
+
+---
+
+## [0.4.0] - 2026-07-27
+
+Correctness release. Model pricing and the whole notion of a "token limit" had
+drifted badly out of date; cost was being overstated by roughly 2-3x.
+
+### Added
+- **Real usage limits from Claude Code** (`Claude: Enable Real Usage Limits`).
+  Claude Code exposes the actual 5-hour and 7-day usage percentages and their
+  reset timestamps in the JSON it pipes to a status line command - the only place
+  they are available (no hook receives them, and they are absent from transcript
+  files). The extension can now install a small status line script that mirrors
+  that JSON to a file, and reads the real numbers from it.
+  - Any status line you already use keeps working: the bridge calls it with the
+    same stdin and prints its output.
+  - `Claude: Disable Real Usage Limits` removes the script and restores your
+    previous status line. `settings.json` is backed up before it is touched.
+  - `Claude: Show Usage Limits Bridge Status` reports what is installed and what
+    the last snapshot contained.
+  - With the bridge active, the session countdown uses the API-provided reset
+    timestamp instead of the local start+5h estimate.
+- 7-day windows in the status bar, tooltip, and popup.
+- Rolling 7-day token and cost totals.
+- Per-model cost breakdown in the debug output.
+- `claudeStatusBar.customCostLimit` and `claudeStatusBar.customMessageLimit`, so
+  all three budgets are configurable (not just tokens). `0` disables a budget.
+
+### Fixed
+- **Model pricing was up to 3x wrong.** Prices are now per concrete model rather
+  than per "opus/sonnet/haiku" keyword, which had collapsed models with a 3x
+  price difference into one rate:
+  - Opus 4.5 and later are $5/$25 per MTok, not $15/$75. Only Opus 4.1 and
+    earlier are $15/$75.
+  - Haiku 4.5 is $1/$5, not $0.25/$1.25 (4x understated).
+  - Claude Fable 5 / Mythos 5 ($10/$50) were unrecognised and silently billed at
+    Sonnet rates.
+  - Sonnet 5 uses its $2/$10 introductory rate through 2026-08-31, then $3/$15.
+  - Unknown future model ids now fall back to their family's rates and log once,
+    instead of being silently priced as Sonnet.
+- **1-hour cache writes were billed as 5-minute writes.** Claude Code writes
+  1-hour cache entries almost exclusively, and those cost 2x base input, not
+  1.25x. The per-TTL split from `usage.cache_creation` is now used.
+- **Fast mode, US-only inference, and web search were not billed at all.**
+  `speed: "fast"` reprices Opus 5 / Opus 4.8 at $10/$50, `inference_geo: "us"`
+  applies a 1.1x multiplier, and web search costs $10 per 1,000 requests.
+- **A session window that crossed midnight lost its first hours.** Messages were
+  filtered to "since local midnight", so a window started at 22:00 was truncated
+  at 00:00. History is now a rolling window, independent of the date boundary.
+- `<synthetic>` messages written by Claude Code are no longer priced as Sonnet.
+
+### Changed
+- **Preset plans no longer impose token/cost/message budgets.** The hard-coded
+  figures were not quotas — Anthropic does not publish any, real consumption is
+  weighted by model and effort level, and the 5-hour limits were doubled in May
+  2026. Dividing by them produced nonsense: a routine Max5 session measures
+  ~460,000 tokens in one 5-hour window against the old 88,000 figure, i.e. "525%"
+  and a permanently red status bar, while nothing was actually blocked. Tokens,
+  cost, and messages are now reported as measured values. Real percentages come
+  from the bridge; self-imposed budgets remain available via the three
+  `custom*Limit` settings and apply to any plan.
+- Status bar shows `5h` and `7d` percentages when real data is available, and
+  falls back to token/message counters when it is not.
+- A metric with no budget configured shows its raw value instead of a
+  percentage against an invented limit.
+- Popup gained a "Usage Limits" section, and the model breakdown chart now
+  includes Fable and an "Other" bucket.
+
+### Performance
+- Session files are cached by mtime+size and files untouched for over a week are
+  skipped without being opened. Previously every file in every project was
+  re-parsed on each tick: measured at 615 ms per pass over a 101 MB / 46-file
+  corpus, every 5 seconds. Only files that actually changed are now re-read.
+
+---
+
 ## [0.2.2] - 2025-10-27
 
 ### Added

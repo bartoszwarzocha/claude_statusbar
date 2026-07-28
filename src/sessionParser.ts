@@ -63,12 +63,7 @@ export async function parseSessionFile(filePath: string, projectName?: string): 
           role: msg.role || 'user',
           model: model,
           projectName: projectName,
-          usage: {
-            input_tokens: msg.usage.input_tokens || 0,
-            cache_creation_input_tokens: msg.usage.cache_creation_input_tokens || 0,
-            cache_read_input_tokens: msg.usage.cache_read_input_tokens || 0,
-            output_tokens: msg.usage.output_tokens || 0,
-          },
+          usage: extractUsage(msg.usage),
         };
 
         messages.push(message);
@@ -84,17 +79,75 @@ export async function parseSessionFile(filePath: string, projectName?: string): 
 }
 
 /**
- * Calculate tokens that count toward session limits
- * NOTE: Cache tokens (cache_creation_input_tokens and cache_read_input_tokens)
- * do NOT count toward session limits - only base input_tokens and output_tokens count!
+ * Extract a normalized MessageUsage from a raw JSONL usage object.
  *
- * This is DIFFERENT from cost calculation, which includes all token types.
+ * Beyond the four token counters, current Claude Code transcripts carry fields
+ * that materially change cost: the per-TTL cache split (1-hour writes cost 2x
+ * base input, not 1.25x), fast mode, US-only inference, and server tool calls.
+ */
+export function extractUsage(raw: any): MessageUsage {
+  const usage: MessageUsage = {
+    input_tokens: raw.input_tokens || 0,
+    cache_creation_input_tokens: raw.cache_creation_input_tokens || 0,
+    cache_read_input_tokens: raw.cache_read_input_tokens || 0,
+    output_tokens: raw.output_tokens || 0,
+  };
+
+  // Per-TTL cache creation split (present since the 1h cache shipped)
+  const cc = raw.cache_creation;
+  if (cc && typeof cc === 'object') {
+    usage.cache_creation = {
+      ephemeral_5m_input_tokens: cc.ephemeral_5m_input_tokens || 0,
+      ephemeral_1h_input_tokens: cc.ephemeral_1h_input_tokens || 0,
+    };
+  }
+
+  if (typeof raw.speed === 'string') {
+    usage.speed = raw.speed;
+  }
+  if (typeof raw.inference_geo === 'string') {
+    usage.inference_geo = raw.inference_geo;
+  }
+  if (typeof raw.service_tier === 'string') {
+    usage.service_tier = raw.service_tier;
+  }
+
+  const st = raw.server_tool_use;
+  if (st && typeof st === 'object') {
+    usage.server_tool_use = {
+      web_search_requests: st.web_search_requests || 0,
+      web_fetch_requests: st.web_fetch_requests || 0,
+      code_execution_requests: st.code_execution_requests || 0,
+    };
+  }
+
+  return usage;
+}
+
+/**
+ * Calculate tokens that count toward session limits
+ *
+ * Based on empirical testing with Claude-Code-Usage-Monitor:
+ * - input_tokens: ✓ COUNT toward limits
+ * - output_tokens: ✓ COUNT toward limits
+ * - cache_creation_input_tokens: ✗ DO NOT count toward limits
+ * - cache_read_input_tokens: ✗ DO NOT count toward limits
+ *
+ * Cache tokens affect COST but NOT session limits.
+ * This is DIFFERENT from cost calculation, which includes ALL token types with different pricing.
+ *
+ * Empirical evidence from Maciek's monitor shows only ~7k tokens counted vs 2M+ when including cache.
+ *
+ * Sources:
+ * - https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor
+ * - Real-world testing: 7,243 tokens (8.2%) vs 2M+ tokens (2289%) with cache included
  */
 export function calculateLimitTokens(usage: MessageUsage): number {
   const inputTokens = usage.input_tokens || 0;
   const outputTokens = usage.output_tokens || 0;
 
-  // Only count input and output - cache tokens don't count toward limits
+  // Count ONLY input and output - cache tokens don't count toward limits
+  // (but they DO cost money)
   return inputTokens + outputTokens;
 }
 
