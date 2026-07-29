@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-07-29
+
+### Fixed
+- **"No Active Session" appeared after a period of inactivity, while the session
+  was still running.** The countdown used the reset timestamp reported by Claude
+  Code, but that value is only refreshed when Claude Code renders its status line -
+  which it does per interaction. Sit idle past the reported reset and the snapshot
+  still carries the old timestamp, so the extension concluded the window had closed
+  even though the local window was open and messages were minutes old. The reported
+  reset is now used only while it is still in the future; otherwise the locally
+  computed window end applies. A session that has genuinely ended is still detected,
+  because both sources have to agree before the session is dropped.
+
+---
+
 ## [0.5.1] - 2026-07-29
 
 ### Fixed

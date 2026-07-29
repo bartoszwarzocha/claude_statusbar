@@ -237,7 +237,14 @@ export function calculateSessionMetrics(
   // Prefer the real reset timestamp reported by Claude Code over our own
   // start+5h estimate. The API-provided value accounts for how the window was
   // actually anchored server-side.
-  const effectiveEndTime = rateLimits?.fiveHour?.resetsAt ?? sessionEndTime;
+  // The API reset timestamp is only refreshed while Claude Code is actually
+  // running - it renders its status line per interaction. Sit idle past the
+  // reported reset and the snapshot still carries the old timestamp, so trusting
+  // it blindly declares the session over while the local window is still open and
+  // messages are recent. Use it only while it is still in the future.
+  const reportedReset = rateLimits?.fiveHour?.resetsAt;
+  const effectiveEndTime =
+    reportedReset && reportedReset.getTime() > now.getTime() ? reportedReset : sessionEndTime;
   const effectiveTimeRemaining = Math.max(0, effectiveEndTime.getTime() - now.getTime());
   const timeRemaining = effectiveTimeRemaining;
   const isActive = timeRemaining > 0;
