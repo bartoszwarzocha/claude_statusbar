@@ -7,42 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.2] - 2026-07-29
-
-### Fixed
-- **"No Active Session" appeared after a period of inactivity, while the session
-  was still running.** The countdown used the reset timestamp reported by Claude
-  Code, but that value is only refreshed when Claude Code renders its status line -
-  which it does per interaction. Sit idle past the reported reset and the snapshot
-  still carries the old timestamp, so the extension concluded the window had closed
-  even though the local window was open and messages were minutes old. The reported
-  reset is now used only while it is still in the future; otherwise the locally
-  computed window end applies. A session that has genuinely ended is still detected,
-  because both sources have to agree before the session is dropped.
-
----
-
-## [0.5.1] - 2026-07-29
-
-### Fixed
-- **The panel stopped refreshing and had to be closed and reopened to show
-  values.** `updateValue()` was deleted from the page script while the usage tiles
-  were being added, so every live update threw `updateValue is not defined` part
-  way through - leaving the panel on whatever it was showing, most visibly stuck on
-  "No Active Session" after a session reset. The function is restored.
-- The panel now reveals its content *before* recalculating, so a failure while
-  updating a value can leave figures briefly stale but can no longer hide the whole
-  panel until it is reopened.
-
-### Notes
-- The regression slipped through because the tests exercised individual helpers
-  rather than the message path. Verification now replays the real sequence the
-  extension posts - update, no-session, refreshing, and twenty updates of varying
-  shape - through the page script against a DOM stub.
-
----
-
-## [0.5.0] - 2026-07-28
+## [0.5.0] - 2026-07-29
 
 Configuration audit: after 0.4.x removed the fabricated plan limits, the `plan`
 setting and its commands no longer affected anything. Everything that had lost its
@@ -67,6 +32,23 @@ purpose is gone, and the remaining settings are named for what they actually are
   in one flow; an empty answer clears that budget.
 
 ### Fixed
+- **"No Active Session" appeared after a period of inactivity, while the session
+  was still running.** The countdown used the reset timestamp reported by Claude
+  Code, but that value is only refreshed when Claude Code renders its status line -
+  which it does per interaction. Sit idle past the reported reset and the snapshot
+  still carries the old timestamp, so the extension concluded the window had closed
+  even though the local window was open and messages were minutes old. The reported
+  reset is now used only while it is still in the future; otherwise the locally
+  computed window end applies. A session that has genuinely ended is still detected,
+  because both sources have to agree before the session is dropped.
+- **The panel stopped refreshing and had to be closed and reopened to show
+  values.** `updateValue()` was deleted from the page script while the usage tiles
+  were being added, so every live update threw `updateValue is not defined` part
+  way through - leaving the panel on whatever it was showing, most visibly stuck on
+  "No Active Session" after a session reset. The function is restored.
+- The panel now reveals its content *before* recalculating, so a failure while
+  updating a value can leave figures briefly stale but can no longer hide the whole
+  panel until it is reopened.
 - **Adjacent composition-bar segments could be exactly the same colour.** Colours
   came from the model family, so Opus 5 next to Opus 4.8 rendered as one
   indistinguishable block. Each family now has four shades and consecutive models
