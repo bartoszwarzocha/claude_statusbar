@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-07-29
+
+### Fixed
+- **The panel stopped refreshing and had to be closed and reopened to show
+  values.** `updateValue()` was deleted from the page script while the usage tiles
+  were being added, so every live update threw `updateValue is not defined` part
+  way through - leaving the panel on whatever it was showing, most visibly stuck on
+  "No Active Session" after a session reset. The function is restored.
+- The panel now reveals its content *before* recalculating, so a failure while
+  updating a value can leave figures briefly stale but can no longer hide the whole
+  panel until it is reopened.
+
+### Notes
+- The regression slipped through because the tests exercised individual helpers
+  rather than the message path. Verification now replays the real sequence the
+  extension posts - update, no-session, refreshing, and twenty updates of varying
+  shape - through the page script against a DOM stub.
+
+---
+
 ## [0.5.0] - 2026-07-28
 
 Configuration audit: after 0.4.x removed the fabricated plan limits, the `plan`

@@ -985,6 +985,13 @@ export class SessionPopupPanel {
                 // Update session end time
                 sessionEndTime = new Date(session.sessionEndTime).getTime();
 
+                // Reveal the content BEFORE recalculating. If updating a value
+                // ever throws, the panel is left showing slightly stale numbers
+                // rather than stuck on "No Active Session" until it is reopened.
+                document.getElementById('main-content').style.display = 'block';
+                document.getElementById('refreshing-message').style.display = 'none';
+                document.getElementById('no-session-message').style.display = 'none';
+
                 // Update all metrics
                 updateMetrics(session, planConfig);
 
@@ -999,10 +1006,6 @@ export class SessionPopupPanel {
                     }
                 }
 
-                // Show content if it was hidden
-                document.getElementById('main-content').style.display = 'block';
-                document.getElementById('refreshing-message').style.display = 'none';
-                document.getElementById('no-session-message').style.display = 'none';
             } else if (message.type === 'refreshing') {
                 // Show refreshing message
                 document.getElementById('main-content').style.display = 'none';
@@ -1130,6 +1133,11 @@ export class SessionPopupPanel {
         }
 
         // ---- Composition bars (mirror of the server-side renderers) ----
+
+        function updateValue(id, value) {
+            const elem = document.getElementById(id);
+            if (elem) { elem.textContent = value; }
+        }
 
         function prettyModelName(id) {
             const parts = id.replace(/^claude-/, '').split('-');
