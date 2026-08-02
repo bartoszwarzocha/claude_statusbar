@@ -144,6 +144,13 @@ export interface SessionMetrics {
   rateLimits?: RateLimitSnapshot;
 
   /**
+   * Context usage per Claude Code session. The context window belongs to one
+   * conversation, so with several sessions open there is no single value -
+   * they are listed instead. Newest first.
+   */
+  sessionContexts: SessionContextInfo[];
+
+  /**
    * Why the limits are or are not available:
    *  - 'off'     the bridge is not installed
    *  - 'waiting' the bridge runs but Claude Code reports no limits, which means
@@ -156,6 +163,16 @@ export interface SessionMetrics {
   /** Rolling 7-day totals, used when no bridge data is available */
   weekTokens: number;
   weekCost: number;
+}
+
+/** One Claude Code session's context usage, as reported by the bridge */
+export interface SessionContextInfo {
+  sessionId: string;
+  label: string;
+  contextPercent?: number;
+  contextWindowSize?: number;
+  model?: string;
+  updatedAt: Date;
 }
 
 /**

@@ -31,6 +31,18 @@ purpose is gone, and the remaining settings are named for what they actually are
 - `Claude: Set Plan to Custom` → **`Claude: Set Budgets`**, which asks for all three
   in one flow; an empty answer clears that budget.
 
+### Added
+- **Context usage listed per Claude Code session.** The context window belongs to
+  one conversation, not to the account, so with several sessions open a single
+  figure was misleading - it showed whichever session had rendered its status line
+  last. The bridge now records one file per session, and the panel lists every
+  recent session with its own context percentage and how old that reading is. The
+  Context tile names the session it refers to instead of being anonymous. The 5-hour
+  and weekly figures are unaffected: those are account-wide and identical in every
+  session.
+- The installed bridge script is refreshed in place when it predates the current
+  extension, so per-session data starts flowing without re-running the setup.
+
 ### Fixed
 - **"No Active Session" appeared after a period of inactivity, while the session
   was still running.** The countdown used the reset timestamp reported by Claude

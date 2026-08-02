@@ -16,6 +16,9 @@ import {
   getRateLimitFilePath,
   installBridge,
   readRateLimits,
+  readSessionContexts,
+  refreshBridgeScriptIfOutdated,
+  getSessionsDirPath,
   uninstallBridge,
 } from './rateLimits';
 
@@ -159,6 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       // Step 2: Read the authoritative rate limits, if the bridge is feeding us
       const rateLimits = readRateLimits();
+      const sessionContexts = readSessionContexts();
       const bridgeActive = getBridgeStatus().active;
       const rateLimitsStatus: 'off' | 'waiting' | 'live' = !bridgeActive
         ? 'off'
@@ -173,7 +177,8 @@ export function activate(context: vscode.ExtensionContext) {
         planConfig,
         outputChannel,
         rateLimits,
-        rateLimitsStatus
+        rateLimitsStatus,
+        sessionContexts
       );
 
       if (metrics && metrics.isActive) {
@@ -574,7 +579,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Watch the bridge snapshot so real limits refresh the moment Claude Code
   // renders its status line, without waiting for the polling interval.
-  const rateLimitWatcher = chokidar.watch(getRateLimitFilePath(), {
+  // An installed script from an older extension version is refreshed in place,
+  // so per-session data starts flowing without the user re-running the setup.
+  if (refreshBridgeScriptIfOutdated()) {
+    outputChannel.appendLine('[Bridge] Script refreshed to the current version');
+  }
+
+  const rateLimitWatcher = chokidar.watch([getRateLimitFilePath(), getSessionsDirPath()], {
     persistent: true,
     ignoreInitial: true,
   });

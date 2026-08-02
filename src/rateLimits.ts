@@ -21,6 +21,10 @@ import { RateLimitSnapshot, RateLimitWindow } from './types';
  */
 
 const BRIDGE_STATE_FILE = 'claude-statusbar-bridge.json';
+/** One file per Claude Code session - a shared file would race with 10 sessions rendering */
+const BRIDGE_SESSIONS_DIR = 'claude-statusbar-sessions';
+/** Bumped whenever the installed script changes, so it can be refreshed silently */
+const BRIDGE_SCRIPT_VERSION = 2;
 const BRIDGE_SCRIPT_FILE = 'claude-statusbar-bridge.js';
 const BRIDGE_BACKUP_FILE = 'claude-statusbar-bridge-backup.json';
 
@@ -44,9 +48,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const BRIDGE_VERSION = ${BRIDGE_SCRIPT_VERSION};
 const dir = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
 const stateFile = path.join(dir, ${JSON.stringify(BRIDGE_STATE_FILE)});
 const backupFile = path.join(dir, ${JSON.stringify(BRIDGE_BACKUP_FILE)});
+const sessionsDir = path.join(dir, ${JSON.stringify(BRIDGE_SESSIONS_DIR)});
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -77,6 +83,34 @@ process.stdin.on('end', () => {
       fs.writeFileSync(tmp, JSON.stringify(snapshot), 'utf8');
       fs.renameSync(tmp, stateFile);
     } catch (e) { /* never block the status line on a write failure */ }
+
+    // Context usage is per session, so every session also records its own file.
+    // The shared snapshot above only ever holds whichever session rendered last.
+    try {
+      if (parsed.session_id) {
+        const safeId = String(parsed.session_id).replace(/[^\\w.-]/g, '_');
+        const ws = parsed.workspace || {};
+        const entry = {
+          version: BRIDGE_VERSION,
+          written_at: Date.now(),
+          session_id: parsed.session_id,
+          session_name: parsed.session_name || null,
+          project_dir: ws.project_dir || ws.current_dir || null,
+          model: parsed.model ? parsed.model.display_name || parsed.model.id : null,
+          context_used_percentage: parsed.context_window
+            ? parsed.context_window.used_percentage
+            : null,
+          context_window_size: parsed.context_window
+            ? parsed.context_window.context_window_size
+            : null,
+        };
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const target = path.join(sessionsDir, safeId + '.json');
+        const tmp2 = target + '.tmp';
+        fs.writeFileSync(tmp2, JSON.stringify(entry), 'utf8');
+        fs.renameSync(tmp2, target);
+      }
+    } catch (e) { /* per-session detail is a nice-to-have, never fatal */ }
   }
 
   // Preserve whatever status line the user had before we were installed.
@@ -147,6 +181,10 @@ function bridgeStatePath(dir = getClaudeConfigDir()): string {
 
 function bridgeBackupPath(dir = getClaudeConfigDir()): string {
   return path.join(dir, BRIDGE_BACKUP_FILE);
+}
+
+function bridgeSessionsDir(dir = getClaudeConfigDir()): string {
+  return path.join(dir, BRIDGE_SESSIONS_DIR);
 }
 
 function settingsPath(dir = getClaudeConfigDir()): string {
@@ -229,6 +267,116 @@ export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | 
   }
 
   return snapshot;
+}
+
+/**
+ * Context usage reported per Claude Code session.
+ *
+ * The context window belongs to a single conversation, not to the account, so
+ * with several sessions open there is no single "the" context - each writes its
+ * own file and the extension shows them side by side. A session that has not
+ * been touched in a while keeps its last reported value; `updatedAt` says how
+ * old it is.
+ */
+export interface SessionContext {
+  sessionId: string;
+  /** Project folder name, the most recognisable label available */
+  label: string;
+  contextPercent?: number;
+  contextWindowSize?: number;
+  model?: string;
+  updatedAt: Date;
+}
+
+/** How long a session entry stays interesting after its last render */
+const MAX_SESSION_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Read the per-session context files, newest first. Stale entries are dropped
+ * from the result and deleted, so the directory does not grow without bound.
+ */
+export function readSessionContexts(dir = getClaudeConfigDir()): SessionContext[] {
+  const sessionsDir = bridgeSessionsDir(dir);
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+
+  const out: SessionContext[] = [];
+  for (const file of files) {
+    const full = path.join(sessionsDir, file);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(fs.readFileSync(full, 'utf8'));
+    } catch {
+      continue;
+    }
+
+    const writtenAt = typeof parsed.written_at === 'number' ? parsed.written_at : 0;
+    if (!writtenAt || Date.now() - writtenAt > MAX_SESSION_AGE_MS) {
+      try {
+        fs.unlinkSync(full);
+      } catch {
+        /* best effort */
+      }
+      continue;
+    }
+
+    const projectDir: string | undefined =
+      typeof parsed.project_dir === 'string' ? parsed.project_dir : undefined;
+    const label =
+      (typeof parsed.session_name === 'string' && parsed.session_name) ||
+      (projectDir ? path.basename(projectDir) : undefined) ||
+      String(parsed.session_id || file).slice(0, 8);
+
+    out.push({
+      sessionId: String(parsed.session_id || file.replace(/\.json$/, '')),
+      label,
+      contextPercent:
+        typeof parsed.context_used_percentage === 'number'
+          ? parsed.context_used_percentage
+          : undefined,
+      contextWindowSize:
+        typeof parsed.context_window_size === 'number' ? parsed.context_window_size : undefined,
+      model: typeof parsed.model === 'string' ? parsed.model : undefined,
+      updatedAt: new Date(writtenAt),
+    });
+  }
+
+  return out.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+/** Directory the extension should watch for per-session changes */
+export function getSessionsDirPath(dir = getClaudeConfigDir()): string {
+  return bridgeSessionsDir(dir);
+}
+
+/**
+ * Rewrite the installed script when it predates the current one. It is our own
+ * file, so refreshing it silently is preferable to asking the user to re-run the
+ * setup after every extension update.
+ */
+export function refreshBridgeScriptIfOutdated(dir = getClaudeConfigDir()): boolean {
+  const scriptPath = bridgeScriptPath(dir);
+  let existing: string;
+  try {
+    existing = fs.readFileSync(scriptPath, 'utf8');
+  } catch {
+    return false; // not installed - nothing to refresh
+  }
+
+  if (existing === BRIDGE_SCRIPT) {
+    return false;
+  }
+
+  try {
+    fs.writeFileSync(scriptPath, BRIDGE_SCRIPT, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Path the extension should watch for changes */
@@ -368,6 +516,12 @@ export function uninstallBridge(dir = getClaudeConfigDir()): void {
     } catch {
       /* already gone */
     }
+  }
+
+  try {
+    fs.rmSync(bridgeSessionsDir(dir), { recursive: true, force: true });
+  } catch {
+    /* already gone */
   }
 }
 

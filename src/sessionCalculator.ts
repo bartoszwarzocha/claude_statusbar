@@ -5,6 +5,7 @@ import {
   PlanConfig,
   ModelTier,
   RateLimitSnapshot,
+  SessionContextInfo,
 } from './types';
 import { calculateLimitTokens } from './sessionParser';
 import { calculateMessageCost, getModelTier, normalizeModelId, splitCacheCreation } from './pricing';
@@ -123,7 +124,8 @@ export function calculateSessionMetrics(
   planConfig: PlanConfig,
   outputChannel?: vscode.OutputChannel,
   rateLimits?: RateLimitSnapshot,
-  rateLimitsStatus: 'off' | 'waiting' | 'live' = 'off'
+  rateLimitsStatus: 'off' | 'waiting' | 'live' = 'off',
+  sessionContexts: SessionContextInfo[] = []
 ): SessionMetrics | null {
   if (messages.length === 0) {
     return null;
@@ -429,6 +431,7 @@ export function calculateSessionMetrics(
     messagesByProject,
     rateLimits,
     rateLimitsStatus,
+    sessionContexts,
     weekTokens,
     weekCost,
   };

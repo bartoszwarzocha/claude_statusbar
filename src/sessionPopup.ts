@@ -236,18 +236,74 @@ function resetCaption(window: RateLimitWindow | undefined, withDate: boolean): s
     : `resets ${time}`;
 }
 
+/** "3 min ago" / "2 h ago" - how fresh a session's reported context is */
+function ageLabel(updatedAt: Date): string {
+  const minutes = Math.max(0, Math.round((Date.now() - updatedAt.getTime()) / 60000));
+  if (minutes < 1) {
+    return 'just now';
+  }
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+  return `${Math.floor(minutes / 60)} h ago`;
+}
+
+/**
+ * One row per Claude Code session.
+ *
+ * The context window belongs to a conversation, not to the account, so with
+ * several sessions open a single number would be meaningless - it would show
+ * whichever session rendered its status line last. Each row carries its own
+ * value and how old that reading is, since an idle session stops reporting.
+ */
+function renderSessionContexts(session: SessionMetrics): string {
+  const rows = session.sessionContexts || [];
+  if (rows.length === 0) {
+    return '';
+  }
+
+  const items = rows
+    .map((row) => {
+      const known = typeof row.contextPercent === 'number';
+      const percent = known ? Math.min(row.contextPercent as number, 100) : 0;
+      const color = known ? getStatusColor(row.contextPercent as number) : 'transparent';
+      const rowId = `sess-${row.sessionId.replace(/[^\w-]/g, '')}`;
+      return `
+            <div class="session-row">
+                <div class="session-row-head">
+                    <span class="session-row-name" title="${escapeHtml(row.sessionId)}">${escapeHtml(row.label)}</span>
+                    <span class="session-row-meta" id="${rowId}-meta">${known ? `${Math.round(row.contextPercent as number)}%` : '—'} · ${ageLabel(row.updatedAt)}</span>
+                </div>
+                <div class="session-row-bar"><div class="session-row-fill" id="${rowId}-fill" style="width: ${percent}%; background-color: ${color};"></div></div>
+            </div>`;
+    })
+    .join('');
+
+  return `
+        <div class="session-list" id="session-list">
+            <div class="session-list-title">Context per session (${rows.length})</div>
+            ${items}
+        </div>`;
+}
+
 /** The three tiles shown once Claude Code reports usage */
 function renderLimitTiles(session: SessionMetrics): string {
   const fiveHour = session.rateLimits?.fiveHour;
   const sevenDay = session.rateLimits?.sevenDay;
-  const context = session.rateLimits?.contextUsedPercent;
+
+  // With several sessions open there is no single context value: use the most
+  // recently active one and name it, so the number is never anonymous.
+  const newest = (session.sessionContexts || [])[0];
+  const context = newest?.contextPercent ?? session.rateLimits?.contextUsedPercent;
+  const caption = newest ? newest.label : 'current Claude Code session';
 
   return `
         <div class="limit-tiles">
-            ${renderLimitTile('ctx', 'Context', context, 'current Claude Code session')}
+            ${renderLimitTile('ctx', 'Context', context, caption)}
             ${renderLimitTile('five-hour', '5-hour window', fiveHour?.usedPercent, resetCaption(fiveHour, false))}
             ${renderLimitTile('seven-day', '7-day window', sevenDay?.usedPercent, resetCaption(sevenDay, true))}
-        </div>`;
+        </div>
+        ${renderSessionContexts(session)}`;
 }
 
 /**
@@ -458,12 +514,16 @@ export class SessionPopupPanel {
     const hasAnyWindow = Boolean(session.rateLimits?.fiveHour || session.rateLimits?.sevenDay);
     // Whether each metric renders a progress bar or a composition bar is baked
     // into the markup, so a budget appearing or disappearing needs a re-render.
+    const sessions = (session.sessionContexts || [])
+      .map((c) => c.sessionId)
+      .sort()
+      .join(',');
     const budgets = [
       Boolean(planConfig.tokenLimit),
       Boolean(session.costLimit),
       Boolean(session.messageLimit),
     ].join(',');
-    return `${status}|${hasAnyWindow}|${budgets}`;
+    return `${status}|${hasAnyWindow}|${budgets}|${sessions}`;
   }
 
   /**
@@ -679,6 +739,46 @@ export class SessionPopupPanel {
         .limit-tile-fill {
             height: 100%;
             border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+        .session-list {
+            margin-top: 12px;
+        }
+        .session-list-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 6px;
+        }
+        .session-row {
+            margin-bottom: 7px;
+        }
+        .session-row-head {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 3px;
+            gap: 12px;
+        }
+        .session-row-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .session-row-meta {
+            flex-shrink: 0;
+            color: var(--vscode-descriptionForeground);
+        }
+        .session-row-bar {
+            height: 4px;
+            border-radius: 2px;
+            background-color: var(--vscode-input-background);
+            overflow: hidden;
+        }
+        .session-row-fill {
+            height: 100%;
+            border-radius: 2px;
             transition: width 0.3s ease;
         }
         .progress-label {
@@ -1036,7 +1136,7 @@ export class SessionPopupPanel {
             updateValue('session-times', 'Started: ' + startTime + ' • Ends: ' + endTime);
 
             // Authoritative usage limits from Claude Code, when available
-            updateLimitTiles(session.rateLimits);
+            updateLimitTiles(session.rateLimits, session.sessionContexts);
 
             // Token usage
             updateProgress('token', session.totalTokens.toLocaleString(), planConfig.tokenLimit ? planConfig.tokenLimit.toLocaleString() : null, tokenPercent, 'tokens');
@@ -1230,9 +1330,41 @@ export class SessionPopupPanel {
             return withDate ? 'resets ' + d.toLocaleDateString() + ' ' + time : 'resets ' + time;
         }
 
-        function updateLimitTiles(rateLimits) {
+        function ageLabel(iso) {
+            const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+            if (minutes < 1) { return 'just now'; }
+            if (minutes < 60) { return minutes + ' min ago'; }
+            return Math.floor(minutes / 60) + ' h ago';
+        }
+
+        // Per-session context rows. The DOM order is fixed by the last render;
+        // only values move, so a session overtaking another does not reshuffle
+        // the list under the cursor.
+        function updateSessionContexts(rows) {
+            if (!rows) { return; }
+            for (const row of rows) {
+                const id = 'sess-' + String(row.sessionId).replace(/[^\\w-]/g, '');
+                const known = typeof row.contextPercent === 'number';
+                const meta = document.getElementById(id + '-meta');
+                if (meta) {
+                    meta.textContent = (known ? Math.round(row.contextPercent) + '%' : '—') +
+                        ' · ' + ageLabel(row.updatedAt);
+                }
+                const fill = document.getElementById(id + '-fill');
+                if (fill) {
+                    fill.style.width = (known ? Math.min(row.contextPercent, 100) : 0) + '%';
+                    fill.style.backgroundColor = known ? limitColor(row.contextPercent) : 'transparent';
+                }
+            }
+        }
+
+        function updateLimitTiles(rateLimits, sessionContexts) {
+            const newest = (sessionContexts || [])[0];
+            updateSessionContexts(sessionContexts);
+            updateLimitTile('ctx',
+                newest ? newest.contextPercent : (rateLimits && rateLimits.contextUsedPercent),
+                newest ? newest.label : 'current Claude Code session');
             if (!rateLimits) { return; }
-            updateLimitTile('ctx', rateLimits.contextUsedPercent, 'current Claude Code session');
             updateLimitTile('five-hour', rateLimits.fiveHour && rateLimits.fiveHour.usedPercent,
                 resetCaption(rateLimits.fiveHour, false));
             updateLimitTile('seven-day', rateLimits.sevenDay && rateLimits.sevenDay.usedPercent,
