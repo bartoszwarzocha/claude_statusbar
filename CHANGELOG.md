@@ -7,29 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.0] - 2026-07-29
+## [0.5.0] - 2026-08-03
 
-Configuration audit: after 0.4.x removed the fabricated plan limits, the `plan`
-setting and its commands no longer affected anything. Everything that had lost its
-purpose is gone, and the remaining settings are named for what they actually are.
-
-### Removed
-- **`claudeStatusBar.plan`.** With presets carrying no budgets and no longer gating
-  the Usage Limits section, it only printed a label. The "Plan" tile in the popup is
-  replaced by "Last 7 days" cost.
-- Commands `Set Plan to Pro` / `Max5` / `Max20` from the palette - they changed
-  nothing but that label. **The command IDs remain registered**, so an existing
-  keybinding does not fail with "command not found": it explains the change and
-  offers to set budgets or enable the real limits.
-- Dead code: `LEGACY_PLAN_BUDGETS`, `PLAN_LIMITS`, `formatTokenCount`, and the
-  `lastRateLimits` variable, which was written twice and never read.
-
-### Changed
-- **Settings renamed** to match what they are - targets you choose, not limits:
-  `customTokenLimit` → `tokenBudget`, `customCostLimit` → `costBudget`,
-  `customMessageLimit` → `messageBudget`. Defaults are now `0` (no budget).
-- `Claude: Set Plan to Custom` → **`Claude: Set Budgets`**, which asks for all three
-  in one flow; an empty answer clears that budget.
+Context usage is now reported per Claude Code session, and the configuration has
+been audited: after 0.4.x removed the fabricated plan limits, the `plan` setting and
+its commands no longer affected anything, so everything that had lost its purpose is
+gone and the remaining settings are named for what they actually are. Several panel
+refresh bugs introduced in 0.4.x are fixed.
 
 ### Added
 - **Context usage listed per Claude Code session.** The context window belongs to
@@ -42,6 +26,24 @@ purpose is gone, and the remaining settings are named for what they actually are
   session.
 - The installed bridge script is refreshed in place when it predates the current
   extension, so per-session data starts flowing without re-running the setup.
+
+### Changed
+- **Settings renamed** to match what they are - targets you choose, not limits:
+  `customTokenLimit` → `tokenBudget`, `customCostLimit` → `costBudget`,
+  `customMessageLimit` → `messageBudget`. Defaults are now `0` (no budget).
+- `Claude: Set Plan to Custom` → **`Claude: Set Budgets`**, which asks for all three
+  in one flow; an empty answer clears that budget.
+
+### Removed
+- **`claudeStatusBar.plan`.** With presets carrying no budgets and no longer gating
+  the Usage Limits section, it only printed a label. The "Plan" tile in the popup is
+  replaced by "Last 7 days" cost.
+- Commands `Set Plan to Pro` / `Max5` / `Max20` from the palette - they changed
+  nothing but that label. **The command IDs remain registered**, so an existing
+  keybinding does not fail with "command not found": it explains the change and
+  offers to set budgets or enable the real limits.
+- Dead code: `LEGACY_PLAN_BUDGETS`, `PLAN_LIMITS`, `formatTokenCount`, and the
+  `lastRateLimits` variable, which was written twice and never read.
 
 ### Fixed
 - **"No Active Session" appeared after a period of inactivity, while the session
@@ -76,6 +78,8 @@ purpose is gone, and the remaining settings are named for what they actually are
   already set under the new key.
 - The retired plan presets are deliberately **not** converted into budgets: they were
   never real quotas, and restoring them would bring back percentages like "525%".
+
+---
 
 ---
 

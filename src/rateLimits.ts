@@ -285,6 +285,8 @@ export interface SessionContext {
   contextPercent?: number;
   contextWindowSize?: number;
   model?: string;
+  /** Conversation title, used as hover text - often too long to display inline */
+  title?: string;
   updatedAt: Date;
 }
 
@@ -326,9 +328,12 @@ export function readSessionContexts(dir = getClaudeConfigDir()): SessionContext[
 
     const projectDir: string | undefined =
       typeof parsed.project_dir === 'string' ? parsed.project_dir : undefined;
+    // Project folder first: it is short, stable, and matches how the work is
+    // organised. The conversation title is often a long sentence that would be
+    // truncated, so it becomes the hover text instead.
     const label =
-      (typeof parsed.session_name === 'string' && parsed.session_name) ||
       (projectDir ? path.basename(projectDir) : undefined) ||
+      (typeof parsed.session_name === 'string' && parsed.session_name) ||
       String(parsed.session_id || file).slice(0, 8);
 
     out.push({
@@ -341,6 +346,7 @@ export function readSessionContexts(dir = getClaudeConfigDir()): SessionContext[
       contextWindowSize:
         typeof parsed.context_window_size === 'number' ? parsed.context_window_size : undefined,
       model: typeof parsed.model === 'string' ? parsed.model : undefined,
+      title: typeof parsed.session_name === 'string' ? parsed.session_name : undefined,
       updatedAt: new Date(writtenAt),
     });
   }

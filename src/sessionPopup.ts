@@ -271,7 +271,7 @@ function renderSessionContexts(session: SessionMetrics): string {
       return `
             <div class="session-row">
                 <div class="session-row-head">
-                    <span class="session-row-name" title="${escapeHtml(row.sessionId)}">${escapeHtml(row.label)}</span>
+                    <span class="session-row-name" title="${escapeHtml(row.title || row.sessionId)}">${escapeHtml(row.label)}</span>
                     <span class="session-row-meta" id="${rowId}-meta">${known ? `${Math.round(row.contextPercent as number)}%` : '—'} · ${ageLabel(row.updatedAt)}</span>
                 </div>
                 <div class="session-row-bar"><div class="session-row-fill" id="${rowId}-fill" style="width: ${percent}%; background-color: ${color};"></div></div>

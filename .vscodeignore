@@ -35,8 +35,11 @@ npm-debug.log*
 *.log
 
 # Exclude accidental files (but keep resources folder)
-*.jpg
-!resources/*.jpg
+**/*.jpg
 *.png
 !resources/*.png
 Schowek_*
+
+# Screenshots of the pre-0.4 interface are no longer referenced by the README and
+# only inflate the package. They stay in the repository; the *.jpg rule above keeps
+# them out of the .vsix.

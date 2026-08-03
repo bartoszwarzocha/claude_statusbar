@@ -172,6 +172,8 @@ export interface SessionContextInfo {
   contextPercent?: number;
   contextWindowSize?: number;
   model?: string;
+  /** Conversation title, shown on hover */
+  title?: string;
   updatedAt: Date;
 }
 

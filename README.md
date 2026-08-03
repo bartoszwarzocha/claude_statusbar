@@ -5,10 +5,12 @@
 
 ## 📊 Status Bar & Tooltip
 
-The extension automatically starts monitoring when you open VS Code. The status bar shows real-time usage with color-coded warnings based on token usage:
+The extension starts monitoring when VS Code opens. What the bar shows depends on
+whether it can read your real limits:
 
 ```
-Reset: 03:45:12 | C: 35.9% | T: 74.4% | M: 25.5%
+Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34      real limits enabled
+Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70     measured values only
 ```
 
 **Status Bar Components:**
@@ -36,9 +38,9 @@ Click the status bar to open the statistics panel.
 
 **Session Timer** — countdown to the reset, with the window's start and end times.
 
-**Usage Limits** — two progress bars with the real percentage of the 5-hour and
-weekly windows consumed and the exact reset times. See
-[Real usage limits](#real-usage-limits-recommended).
+**Usage Limits** — three tiles with the real percentage consumed of the context
+window, the 5-hour window and the weekly window, each with its reset time, plus a
+per-session context list. See [Real usage limits](#real-usage-limits-recommended).
 
 **Token Usage, Cost Usage, Message Count** — each section shows one bar:
 - a **progress bar** with a percentage, when you have set a budget for that metric
@@ -74,14 +76,27 @@ status bar:
 ```
 ┌──────────────────┬──────────────────┬──────────────────┐
 │     CONTEXT      │  5-HOUR WINDOW   │   7-DAY WINDOW   │
-│       53%        │        6%        │       88%        │
-│ current session  │  resets 14:35    │ resets Fri 20:01 │
-│ ▁▁▁▁▁▁▁▁         │ ▁▁               │ ▁▁▁▁▁▁▁▁▁▁▁▁▁    │
+│       82%        │        6%        │       88%        │
+│  PhotoManager    │  resets 14:35    │ resets Fri 20:01 │
+│ ▁▁▁▁▁▁▁▁▁▁▁▁▁    │ ▁▁               │ ▁▁▁▁▁▁▁▁▁▁▁▁▁    │
 └──────────────────┴──────────────────┴──────────────────┘
+
+CONTEXT PER SESSION (4)
+PhotoManager          82% · just now
+claude-statusbar      66% · 1 min ago
+Apokryf-Galicyjski    91% · 16 min ago
+eBooki                 — · 2 h ago
 ```
 
 Numbers are green below 60%, amber to 80%, red above. A value Claude Code does not
 report shows a dash — context is briefly absent right after `/compact`.
+
+**Context is per session, the limits are per account.** The context window belongs
+to one conversation, so with several Claude Code sessions open there is no single
+"the" context: each is listed with its own percentage and how old that reading is
+(a session that has been idle stops reporting). The Context tile shows the most
+recently active session and names it. The 5-hour and weekly figures need no such
+split — they are account-wide and identical in every session.
 
 **How it works.** That data is only exposed in the JSON Claude Code pipes to a
 status line command — no hook receives it, and it is not written to the transcript
@@ -197,7 +212,10 @@ Claude Code uses **5-hour rolling sessions**, plus weekly windows. The extension
 
 1. Detects your first message timestamp
 2. Calculates session expiry (5 hours later) — or, with the bridge enabled, uses
-   the exact reset timestamp reported by Claude Code
+   the exact reset timestamp reported by Claude Code, as long as that timestamp is
+   still in the future. Claude Code only refreshes it while it is running, so an
+   expired one falls back to the locally computed window rather than declaring the
+   session over
 3. Tracks usage within the active window
 4. Automatically resets when the session expires
 
@@ -262,8 +280,12 @@ All data processing happens **locally on your machine**:
 ## Requirements
 
 - **VS Code**: 1.104.0 or higher
-- **Claude Code**: Active installation with local conversation data
-- **Node.js**: Only for development
+- **Claude Code**: an active installation with local conversation data
+- **Node.js on `PATH`**: required only for the real usage limits — Claude Code runs
+  the bridge script with it. Everything else works without it.
+- **Claude.ai Pro or Max**: required for the 5-hour and weekly figures. They do not
+  exist for API-key, Amazon Bedrock or Google Cloud sign-ins, where usage is billed
+  per token and the cost figures are the relevant ones.
 
 ## Development
 
