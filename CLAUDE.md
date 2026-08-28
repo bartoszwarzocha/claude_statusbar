@@ -70,6 +70,28 @@ So `rateLimits.ts` installs a small status line script that mirrors that JSON to
 The data exists only for Claude.ai Pro/Max sign-ins. With an API key, Bedrock or Google Cloud the
 field is simply absent - that is the `rateLimitsStatus: 'waiting'` state, not an error.
 
+**The bridge cannot see the VS Code extension.** Claude Code's own VS Code extension
+(`entrypoint: "claude-vscode"` in the transcripts) has no status line, so it never runs the script:
+no snapshot, no per-session file. Working there leaves the 5-hour and weekly percentages frozen at
+the last terminal reading until they age out. There is no second source - `claude` has no `usage`
+subcommand, no OTEL metric carries rate limits, and nothing else under `~/.claude` holds them; this
+was checked, do not go looking again. What the extension does instead is (a) date the reading rather
+than let it pass for live, and (b) derive everything it can from the transcripts, which every
+entrypoint writes identically.
+
+**3. `~/.claude/sessions/<pid>.json` - which sessions are open.** Claude Code writes one file per
+running process with `sessionId`, `cwd`, `entrypoint`, a derived `name` and `status`, and removes it
+on exit. `liveSessions.ts` reads them and checks the PID with `process.kill(pid, 0)` (works on
+Windows), because a crash leaves the file behind. This is the authority for the session list - a
+timeout is wrong in one direction or the other, and both directions were reported as bugs.
+
+**4. Transcripts again, for session discovery.** `sessionParser.ts:parseSessionFileWithMeta()`
+returns `TranscriptMeta` alongside the messages - `sessionId`, `cwd`, `entrypoint`, the `ai-title`
+line, and the tokens resident at the last non-sidechain reply. `sessionRegistry.ts` merges that with
+the bridge's per-session files: transcripts decide which sessions exist, the bridge sharpens the ones
+it can see. A bridge reading older than the transcript loses to the local estimate, which is what
+happens when a CLI session is resumed inside the VS Code extension.
+
 ### Session windows
 
 - 5-hour rolling windows, grouped from the first message, start truncated to the full hour
@@ -96,12 +118,23 @@ billed - see `sessionParser.ts:calculateLimitTokens()`.
 
 **rateLimits.ts** - the bridge
 - `installBridge()` / `uninstallBridge()`: writes the status line script, backs up `settings.json`,
-  preserves any pre-existing status line by delegating to it
+  preserves any pre-existing status line by delegating to it. Also sets `statusLine.refreshInterval`
+  (Claude Code >= 2.1.97) - **without it the status line runs only when a session redraws, so the
+  limits freeze on an idle terminal and never move at all while the work is in the VS Code
+  extension**. `ensureStatusLineRefreshInterval()` backfills it into installs from 0.5.0
 - `readRateLimits()`: parses the snapshot; returns undefined when stale (>12h) or without windows
 - `getBridgeStatus()`: installed / wired into settings / delegate / snapshot age
 
-**sessionParser.ts** - `parseSessionFile()`, `extractUsage()` (cache split, speed, geo, server tools),
-`calculateLimitTokens()`
+**sessionParser.ts** - `parseSessionFile()`, `parseSessionFileWithMeta()` (same single pass, plus the
+session facts), `extractUsage()` (cache split, speed, geo, server tools), `calculateLimitTokens()`
+
+**liveSessions.ts** - `readLiveSessions()`: the PID-checked register of running sessions
+
+**sessionRegistry.ts** - `buildSessionContexts()`: transcripts + bridge files + live sessions -> the
+session list.
+Context percent = resident tokens / window size, where the size comes from the bridge at any age
+(it is a property of the plan, not a reading that goes stale). Estimates are flagged `estimated` and
+render with a `~`.
 
 **sessionCalculator.ts** - `calculateSessionMetrics()`: dedupe by `id:requestId`, group into 5-hour
 sets, pick the set overlapping now, aggregate tokens/cost/model/project, burn rates over 10 minutes
@@ -114,7 +147,11 @@ otherwise from a configured budget, otherwise nothing
 - mirrored JavaScript inside the page for live refreshes
 - `layoutKey()` decides between a full re-render and `postMessage`. The Usage Limits section and the
   progress-vs-composition bar choice are baked into the markup, so a change there **must** re-render -
-  `postMessage` cannot create elements that are not in the DOM
+  `postMessage` cannot create elements that are not in the DOM. The stale-data warning and the VS Code
+  caveat are markup too, so both are in the key
+- The Context tile cycles through the open sessions every 2 s from a timer inside the page. The
+  rotation index lives in the page, and `updateLimitTiles()` clamps rather than resets it, so a
+  refresh does not knock the rotation back to the first session
 
 **extension.ts** - activation, polling, file watching, commands, settings migration
 
@@ -162,7 +199,9 @@ parallel. Activation: `onStartupFinished`. Custom icon font: `resources/Glyphter
 2. **Scan every project** under the data directory, not just the current workspace
 3. **Do not re-parse everything on every tick.** Files are cached by mtime+size and anything untouched
    for over a week is skipped unopened. A full pass measured 615 ms over 101 MB / 46 files, and it ran
-   every 5 seconds
+   every 5 seconds. `extension.ts` also debounces file events into one pass and refuses to run two
+   passes at once - one reply writes its transcript many times, and the bridge snapshot is rewritten
+   every 10 s on top of that
 4. **Never invent a denominator.** With no budget, show the measured value - the panel then renders a
    composition bar (what the value is made of) rather than an empty progress bar
 5. **Colours**: each model family has four shades so two models of the same family sitting next to

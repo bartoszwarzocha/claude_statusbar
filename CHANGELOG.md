@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-08-28
+
+Sessions running in the Claude Code **VS Code extension** were invisible to this
+extension's Usage Limits section, and the Context tile flickered between sessions.
+
+### Fixed
+- **Sessions started from the Claude Code VS Code extension are now listed.** The
+  bridge only ever sees sessions that render a status line, and the VS Code
+  extension renders none - so a session working there never appeared, and the
+  5-hour / weekly percentages silently froze at whatever a terminal session had
+  last reported. Sessions are now discovered from the transcripts, which every
+  entrypoint writes, and the bridge refines the ones it can see.
+- **The Context tile no longer jumps between sessions.** It showed whichever
+  session had reported most recently, so with two sessions open the number changed
+  owner every few seconds. It now cycles through the open sessions every two
+  seconds and names the one on screen.
+- **Closed sessions are no longer listed as open.** The list was driven by a
+  timeout - anything that had written recently enough. It now follows Claude
+  Code's own register of running sessions (`~/.claude/sessions/`), and checks the
+  process is alive so a crashed session's leftover file does not count. The
+  timeout survives only as a fallback for Claude Code versions predating that
+  register.
+- **The rate limits no longer freeze between messages.** The bridge is a status
+  line command, and Claude Code ran it only when a session redrew: idle terminal,
+  no update. Installing it now also sets `statusLine.refreshInterval`, so any open
+  terminal session refreshes the account-wide numbers every ten seconds. Existing
+  installations are backfilled on startup. Measured before: one write per redraw.
+  After: one every ten seconds, on the dot.
+- **The panel no longer queues refresh passes behind each other.** Every
+  transcript write triggered a full pass, a single reply produces many writes, and
+  nothing stopped two passes overlapping. Bursts are now collapsed into one pass
+  and passes cannot overlap - which is what made the panel feel slow under load,
+  rather than any single pass being slow.
+- The Usage Limits section is rendered whenever any session's context is known,
+  not only when the bridge is feeding the 5-hour and weekly windows.
+
+### Added
+- **Context usage is estimated from the transcript** when Claude Code has not
+  reported it - the tokens resident at the last reply, over the window size Claude
+  Code last named. Measured against real sessions it lands within half a
+  percentage point. Estimates are marked with `~` so they are never confused with
+  Claude Code's own figures.
+- **Stale rate limits are dated instead of shown as current.** Past half an hour
+  the panel says how old the reading is, and names the VS Code extension as the
+  reason when a session is running there. The status bar tooltip carries the same
+  "as of" note.
+
+---
+
 ## [0.5.0] - 2026-08-03
 
 Context usage is now reported per Claude Code session, and the configuration has

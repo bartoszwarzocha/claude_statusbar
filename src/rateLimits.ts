@@ -32,6 +32,13 @@ const BRIDGE_BACKUP_FILE = 'claude-statusbar-bridge-backup.json';
 const MAX_SNAPSHOT_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /**
+ * How often Claude Code re-runs the status line, and so how fresh the rate
+ * limits can be. Measured: with this set the snapshot lands every 10 s on the
+ * dot; without it, only when a session redraws.
+ */
+const STATUS_LINE_REFRESH_SECONDS = 10;
+
+/**
  * The status line script installed into the user's Claude config directory.
  *
  * It must be well behaved: Claude Code runs it on every render, so it writes
@@ -270,6 +277,24 @@ export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | 
 }
 
 /**
+ * The context window size Claude Code last reported, at any age.
+ *
+ * Deliberately ignores the staleness cut-off that `readRateLimits` applies: a
+ * percentage from yesterday is misleading, but the size of the window is a
+ * property of the plan and the model, and yesterday's answer is still the right
+ * denominator for a session the bridge cannot see today.
+ */
+export function readBridgeContextWindowSize(dir = getClaudeConfigDir()): number | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(bridgeStatePath(dir), 'utf8'));
+    const size = parsed?.context_window?.context_window_size;
+    return typeof size === 'number' && size > 0 ? size : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Context usage reported per Claude Code session.
  *
  * The context window belongs to a single conversation, not to the account, so
@@ -390,6 +415,33 @@ export function getRateLimitFilePath(dir = getClaudeConfigDir()): string {
   return bridgeStatePath(dir);
 }
 
+/**
+ * Add `refreshInterval` to a status line installed before we set it.
+ *
+ * Bridges installed by 0.5.0 only refreshed when a terminal session redrew,
+ * which is what made the percentages look frozen. Backfilling it silently is
+ * preferable to asking the user to re-run the setup, and it is left alone if
+ * they have chosen their own interval.
+ */
+export function ensureStatusLineRefreshInterval(dir = getClaudeConfigDir()): boolean {
+  const settings = readSettings(dir);
+  const statusLine = settings?.statusLine;
+  const command: unknown = statusLine?.command;
+  const isOurs = typeof command === 'string' && command.includes(BRIDGE_SCRIPT_FILE);
+
+  if (!isOurs || typeof statusLine.refreshInterval === 'number') {
+    return false;
+  }
+
+  statusLine.refreshInterval = STATUS_LINE_REFRESH_SECONDS;
+  try {
+    writeSettingsAtomic(dir, settings);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readSettings(dir: string): any {
   try {
     return JSON.parse(fs.readFileSync(settingsPath(dir), 'utf8'));
@@ -476,6 +528,12 @@ export function installBridge(dir = getClaudeConfigDir()): void {
     ...(existing && typeof existing === 'object' ? existing : {}),
     type: 'command',
     command: expectedCommand(dir),
+    // Without this the status line runs only when a session redraws, so the
+    // rate limits freeze for as long as the terminal sits idle - and they freeze
+    // for the whole session when the work happens in the VS Code extension,
+    // which redraws nothing. With it, any open terminal session keeps the
+    // account-wide numbers current. Supported since Claude Code 2.1.97.
+    refreshInterval: STATUS_LINE_REFRESH_SECONDS,
   };
 
   writeSettingsAtomic(dir, settings);

@@ -3,6 +3,20 @@
   <p>A VS Code extension that displays real-time Claude Code usage statistics directly in your status bar.</p>
 </div>
 
+## However you run Claude Code
+
+Tokens, cost, messages and per-session context are read from the transcripts, which
+Claude Code writes the same way whichever way you start it — the **terminal CLI**,
+the **Claude Code VS Code extension**, or both at once. Every running session is
+listed, labelled by its project folder.
+
+The one exception is the 5-hour and weekly limit percentages. Claude Code hands
+those to a status line command, and its VS Code extension renders no status line,
+so keep **one terminal session open** and those numbers stay current for all of
+them — they are account-wide, and an idle session refreshes them every ten seconds.
+With no terminal session at all the panel keeps the last reading and tells you how
+old it is. See [Real usage limits](#real-usage-limits-recommended).
+
 ## 📊 Status Bar & Tooltip
 
 The extension starts monitoring when VS Code opens. What the bar shows depends on
@@ -94,9 +108,11 @@ report shows a dash — context is briefly absent right after `/compact`.
 **Context is per session, the limits are per account.** The context window belongs
 to one conversation, so with several Claude Code sessions open there is no single
 "the" context: each is listed with its own percentage and how old that reading is
-(a session that has been idle stops reporting). The Context tile shows the most
-recently active session and names it. The 5-hour and weekly figures need no such
-split — they are account-wide and identical in every session.
+(a session that has been idle stops reporting). The Context tile cycles through the
+open sessions every two seconds, naming the one it is showing, so the number never
+changes owner without saying so. A `~` marks a percentage the extension worked out
+from the transcript rather than one Claude Code reported. The 5-hour and weekly
+figures need no such split — they are account-wide and identical in every session.
 
 **How it works.** That data is only exposed in the JSON Claude Code pipes to a
 status line command — no hook receives it, and it is not written to the transcript
@@ -116,6 +132,14 @@ to a file and reads it from there.
 - If Claude Code signs in with an **API key**, Amazon Bedrock or Google Cloud,
   there are no 5-hour or weekly windows at all — usage is billed per token. The
   section then says so and points you at the cost figures instead.
+- **The Claude Code VS Code extension renders no status line**, so a session
+  running there feeds the bridge nothing. Keep one terminal session open and the
+  account-wide 5-hour and weekly numbers stay current for all of them — the setup
+  sets `statusLine.refreshInterval`, so an idle terminal still refreshes them
+  every ten seconds. With no terminal session at all the percentages stay at the
+  last reading; the panel dates it and says so rather than passing a frozen number
+  off as current. Everything measured from the transcripts — tokens, cost,
+  messages, and each session's context — works the same either way.
 
 Without the bridge the extension still works — you get accurate token and cost
 figures, just no percentage of your plan.
@@ -205,6 +229,11 @@ Claude Code stores conversation data locally in JSONL files:
 - **macOS/Linux**: `~/.claude/projects/` or `~/.config/claude/projects/`
 
 The extension monitors these files for changes and calculates metrics in real-time.
+Every entrypoint writes them identically, so a session started with `claude` in a
+terminal and one started from the Claude Code VS Code extension are measured the
+same way. Which sessions are currently open is read from Claude Code's own register
+in `~/.claude/sessions/`, with the process checked, so a session that has ended
+drops off the list instead of lingering.
 
 ### Session Windows
 
@@ -280,7 +309,8 @@ All data processing happens **locally on your machine**:
 ## Requirements
 
 - **VS Code**: 1.104.0 or higher
-- **Claude Code**: an active installation with local conversation data
+- **Claude Code**: an active installation with local conversation data, run from a
+  terminal, from the Claude Code VS Code extension, or both
 - **Node.js on `PATH`**: required only for the real usage limits — Claude Code runs
   the bridge script with it. Everything else works without it.
 - **Claude.ai Pro or Max**: required for the 5-hour and weekly figures. They do not

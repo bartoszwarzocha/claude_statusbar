@@ -5,16 +5,20 @@ import * as fs from 'fs';
 import * as chokidar from 'chokidar';
 import { StatusBarManager } from './statusBar';
 import { SessionPopupPanel } from './sessionPopup';
-import { parseSessionFile } from './sessionParser';
+import { parseSessionFileWithMeta } from './sessionParser';
 import { calculateSessionMetrics } from './sessionCalculator';
-import { ClaudeMessage, SessionMetrics, PlanConfig } from './types';
+import { buildSessionContexts } from './sessionRegistry';
+import { getLiveSessionsDirPath, readLiveSessions } from './liveSessions';
+import { ClaudeMessage, SessionMetrics, PlanConfig, TranscriptMeta } from './types';
 import { getPlanConfig } from './plans';
 import {
   checkNodeAvailable,
   getBridgeStatus,
   getClaudeConfigDir,
   getRateLimitFilePath,
+  ensureStatusLineRefreshInterval,
   installBridge,
+  readBridgeContextWindowSize,
   readRateLimits,
   readSessionContexts,
   refreshBridgeScriptIfOutdated,
@@ -68,6 +72,8 @@ export function activate(context: vscode.ExtensionContext) {
     mtimeMs: number;
     size: number;
     messages: ClaudeMessage[];
+    /** Session facts from the same pass - see parseSessionFileWithMeta */
+    meta: TranscriptMeta;
   }
   const fileCache = new Map<string, FileCacheEntry>();
 
@@ -84,6 +90,7 @@ export function activate(context: vscode.ExtensionContext) {
       outputChannel.appendLine(`[${timestamp}] ========== UPDATE METRICS ==========`);
 
       const allMessages: ClaudeMessage[] = [];
+      const transcriptMetas: TranscriptMeta[] = [];
       let filesParsed = 0;
       let filesCached = 0;
       let filesSkipped = 0;
@@ -129,17 +136,20 @@ export function activate(context: vscode.ExtensionContext) {
             const cached = fileCache.get(filePath);
             if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
               allMessages.push(...cached.messages);
+              transcriptMetas.push(cached.meta);
               filesCached++;
               continue;
             }
 
-            const messages = await parseSessionFile(filePath, projectDir);
+            const { messages, meta } = await parseSessionFileWithMeta(filePath, projectDir);
             fileCache.set(filePath, {
               mtimeMs: stat.mtimeMs,
               size: stat.size,
               messages,
+              meta,
             });
             allMessages.push(...messages);
+            transcriptMetas.push(meta);
             filesParsed++;
           } catch (err) {
             // Skip files that can't be parsed
@@ -162,7 +172,14 @@ export function activate(context: vscode.ExtensionContext) {
 
       // Step 2: Read the authoritative rate limits, if the bridge is feeding us
       const rateLimits = readRateLimits();
-      const sessionContexts = readSessionContexts();
+      // Transcripts list the sessions, the bridge sharpens the ones it can see.
+      // Sessions run from the VS Code extension exist only in the former.
+      const sessionContexts = buildSessionContexts(
+        transcriptMetas,
+        readSessionContexts(),
+        readBridgeContextWindowSize(),
+        readLiveSessions()
+      );
       const bridgeActive = getBridgeStatus().active;
       const rateLimitsStatus: 'off' | 'waiting' | 'live' = !bridgeActive
         ? 'off'
@@ -233,15 +250,62 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
+  /**
+   * A full pass stats every transcript in the data directory, and file events
+   * arrive in bursts - a single reply writes the transcript many times, and
+   * Claude Code now rewrites the bridge snapshot every ten seconds on top of
+   * that. Without these two guards the passes overlap and queue up behind each
+   * other, which is what makes the panel feel laggy under load rather than any
+   * one pass being slow.
+   */
+  let updateInFlight = false;
+  let updateQueued = false;
+
+  async function requestUpdate(): Promise<void> {
+    if (updateInFlight) {
+      updateQueued = true; // coalesce: one more pass after this one, not N
+      return;
+    }
+    updateInFlight = true;
+    try {
+      await updateMetrics();
+    } finally {
+      updateInFlight = false;
+      if (updateQueued) {
+        updateQueued = false;
+        void requestUpdate();
+      }
+    }
+  }
+
+  /** Collapse a burst of file events into one pass */
+  let updateDebounce: NodeJS.Timeout | undefined;
+  function scheduleUpdate(delayMs = 400): void {
+    if (updateDebounce) {
+      clearTimeout(updateDebounce);
+    }
+    updateDebounce = setTimeout(() => {
+      updateDebounce = undefined;
+      void requestUpdate();
+    }, delayMs);
+  }
+  context.subscriptions.push({
+    dispose: () => {
+      if (updateDebounce) {
+        clearTimeout(updateDebounce);
+      }
+    },
+  });
+
   // Update immediately
-  updateMetrics();
+  void requestUpdate();
 
   // Get refresh interval from settings (1-60 seconds)
   const config = vscode.workspace.getConfiguration('claudeStatusBar');
   const refreshInterval = Math.max(1, Math.min(60, config.get<number>('refreshInterval', 5)));
 
   // Update at configured interval for metrics
-  const metricsInterval = setInterval(updateMetrics, refreshInterval * 1000);
+  const metricsInterval = setInterval(() => void requestUpdate(), refreshInterval * 1000);
 
   // Update status bar every second to refresh timer dynamically
   const timerInterval = setInterval(() => {
@@ -269,7 +333,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // Trigger immediate metrics update
-        setTimeout(() => updateMetrics(), 100);
+        setTimeout(() => void requestUpdate(), 100);
         return; // Don't update with stale data
       }
 
@@ -306,7 +370,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // Trigger immediate metrics update to check for new session
-        setTimeout(() => updateMetrics(), 100);
+        setTimeout(() => void requestUpdate(), 100);
       } else {
         statusBar.update(updatedSession, planConfig);
 
@@ -336,7 +400,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('claudeStatusBar')) {
         planConfig = loadPlanConfig();
-        updateMetrics();
+        void requestUpdate();
       }
     })
   );
@@ -352,7 +416,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       watcher.on('change', () => {
         console.log('📝 File change detected, updating metrics...');
-        updateMetrics();
+        scheduleUpdate();
       });
 
       watchers.push(watcher);
@@ -461,7 +525,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   const refresh = vscode.commands.registerCommand('claude-statusbar.refresh', () => {
-    updateMetrics();
+    void requestUpdate();
   });
 
   /**
@@ -511,7 +575,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           'Real usage limits enabled. Send a message in Claude Code to populate the data.'
         );
-        updateMetrics();
+        void requestUpdate();
       } catch (err) {
         outputChannel.appendLine(`[Bridge] Install failed: ${err}`);
         vscode.window.showErrorMessage(`Could not enable real usage limits: ${err}`);
@@ -528,7 +592,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           'Real usage limits disabled and the previous Claude Code status line restored.'
         );
-        updateMetrics();
+        void requestUpdate();
       } catch (err) {
         vscode.window.showErrorMessage(`Could not disable real usage limits: ${err}`);
       }
@@ -584,13 +648,24 @@ export function activate(context: vscode.ExtensionContext) {
   if (refreshBridgeScriptIfOutdated()) {
     outputChannel.appendLine('[Bridge] Script refreshed to the current version');
   }
+  // A bridge installed before 0.5.1 only ran when a terminal session redrew, so
+  // the limits froze whenever the work moved elsewhere.
+  if (ensureStatusLineRefreshInterval()) {
+    outputChannel.appendLine('[Bridge] Status line refresh interval added to settings.json');
+  }
 
-  const rateLimitWatcher = chokidar.watch([getRateLimitFilePath(), getSessionsDirPath()], {
-    persistent: true,
-    ignoreInitial: true,
-  });
-  rateLimitWatcher.on('add', () => updateMetrics());
-  rateLimitWatcher.on('change', () => updateMetrics());
+  // `sessions/` is Claude Code's register of running sessions: watching it means
+  // the list reacts when one opens or closes, not on the next poll.
+  const rateLimitWatcher = chokidar.watch(
+    [getRateLimitFilePath(), getSessionsDirPath(), getLiveSessionsDirPath()],
+    {
+      persistent: true,
+      ignoreInitial: true,
+    }
+  );
+  rateLimitWatcher.on('add', () => scheduleUpdate());
+  rateLimitWatcher.on('change', () => scheduleUpdate());
+  rateLimitWatcher.on('unlink', () => scheduleUpdate());
   context.subscriptions.push({ dispose: () => rateLimitWatcher.close() });
 
   // Carry budgets written by an earlier version onto the current setting keys

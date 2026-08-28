@@ -165,16 +165,51 @@ export interface SessionMetrics {
   weekCost: number;
 }
 
-/** One Claude Code session's context usage, as reported by the bridge */
+/** One Claude Code session's context usage */
 export interface SessionContextInfo {
   sessionId: string;
   label: string;
   contextPercent?: number;
+  /** Tokens resident in the context window at the last assistant reply */
+  contextTokens?: number;
   contextWindowSize?: number;
   model?: string;
   /** Conversation title, shown on hover */
   title?: string;
+  /**
+   * How the session was started, from the transcript's `entrypoint` field.
+   * `claude-vscode` is the VS Code extension, which renders no status line and
+   * therefore never feeds the bridge - see `estimated`.
+   */
+  entrypoint?: string;
+  /**
+   * True when the percentage was computed from the transcript rather than
+   * reported by Claude Code. Estimates are close but not identical: Claude Code
+   * measures the window it is about to send, we measure the last reply.
+   */
+  estimated?: boolean;
   updatedAt: Date;
+}
+
+/**
+ * Session-level facts a transcript carries beyond its messages.
+ *
+ * This is the only source that covers every session: the bridge sees only
+ * sessions that render a status line, which the VS Code extension does not.
+ */
+export interface TranscriptMeta {
+  sessionId?: string;
+  /** Working directory of the session, the basis for its label */
+  cwd?: string;
+  /** `cli`, `claude-vscode`, `sdk-cli`, ... */
+  entrypoint?: string;
+  /** Title Claude Code assigned to the conversation */
+  title?: string;
+  /** Model of the last assistant reply */
+  model?: string;
+  /** input + cache read + cache creation of the last non-sidechain reply */
+  contextTokens?: number;
+  lastActivity?: Date;
 }
 
 /**

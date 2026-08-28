@@ -112,7 +112,13 @@ export class StatusBarManager {
     const sevenDay = session.rateLimits?.sevenDay;
 
     if (fiveHour || sevenDay) {
-      lines.push('**Usage limits** _(reported by Claude Code)_');
+      // These come from the last status line render, which can be a while ago -
+      // the VS Code extension renders none at all. Date the reading rather than
+      // let a frozen percentage pass for a live one.
+      const updatedAt = session.rateLimits?.updatedAt;
+      const age = updatedAt ? Date.now() - updatedAt.getTime() : 0;
+      const asOf = updatedAt && age >= 5 * 60 * 1000 ? ` as of ${updatedAt.toLocaleTimeString()}` : '';
+      lines.push(`**Usage limits** _(reported by Claude Code${asOf})_`);
       if (fiveHour) {
         lines.push(
           `- 5-hour: ${fiveHour.usedPercent.toFixed(1)}% used, resets ${fiveHour.resetsAt.toLocaleTimeString()}`
@@ -121,6 +127,11 @@ export class StatusBarManager {
       if (sevenDay) {
         lines.push(
           `- 7-day: ${sevenDay.usedPercent.toFixed(1)}% used, resets ${sevenDay.resetsAt.toLocaleString()}`
+        );
+      }
+      if (asOf && session.sessionContexts?.some((row) => row.entrypoint === 'claude-vscode')) {
+        lines.push(
+          '- _A session is running in the VS Code extension, which renders no status line and reports no limits._'
         );
       }
       lines.push('');

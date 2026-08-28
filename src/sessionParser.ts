@@ -1,12 +1,35 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { ClaudeMessage, MessageUsage } from './types';
+import { ClaudeMessage, MessageUsage, TranscriptMeta } from './types';
 
 /**
  * Parse a Claude JSONL session file and extract messages with usage data
  */
 export async function parseSessionFile(filePath: string, projectName?: string): Promise<ClaudeMessage[]> {
+  return (await parseSessionFileWithMeta(filePath, projectName)).messages;
+}
+
+export interface ParsedSessionFile {
+  messages: ClaudeMessage[];
+  /** Session-level facts, used to list every open session - see TranscriptMeta */
+  meta: TranscriptMeta;
+}
+
+/**
+ * Parse a transcript once, returning both its messages and the session facts.
+ *
+ * Reading the file twice would double the most expensive part of a refresh, so
+ * the metadata is collected in the same pass. Note that it is gathered *before*
+ * the message filters below: `ai-title` lines carry no `message` at all, and a
+ * reply that spent its whole budget on cache reads still tells us how full the
+ * context window is.
+ */
+export async function parseSessionFileWithMeta(
+  filePath: string,
+  projectName?: string
+): Promise<ParsedSessionFile> {
   const messages: ClaudeMessage[] = [];
+  const meta: TranscriptMeta = {};
 
   try {
     const fileStream = fs.createReadStream(filePath);
@@ -22,6 +45,8 @@ export async function parseSessionFile(filePath: string, projectName?: string): 
 
       try {
         const parsed = JSON.parse(line);
+
+        collectMeta(meta, parsed);
 
         // Skip non-message entries (summaries, etc.)
         if (parsed.type === 'summary' || !parsed.message) {
@@ -75,7 +100,55 @@ export async function parseSessionFile(filePath: string, projectName?: string): 
     console.error(`Failed to read session file ${filePath}:`, err);
   }
 
-  return messages;
+  return { messages, meta };
+}
+
+/**
+ * Fold one transcript line into the session facts.
+ *
+ * Every line repeats `sessionId`, `cwd` and `entrypoint`, and a session can
+ * change entrypoint mid-life - resuming a CLI conversation inside the VS Code
+ * extension is common - so the last line wins.
+ */
+function collectMeta(meta: TranscriptMeta, parsed: any): void {
+  if (typeof parsed.sessionId === 'string') {
+    meta.sessionId = parsed.sessionId;
+  }
+  if (typeof parsed.cwd === 'string') {
+    meta.cwd = parsed.cwd;
+  }
+  if (typeof parsed.entrypoint === 'string') {
+    meta.entrypoint = parsed.entrypoint;
+  }
+  if (parsed.type === 'ai-title' && typeof parsed.aiTitle === 'string') {
+    meta.title = parsed.aiTitle;
+  }
+  if (typeof parsed.timestamp === 'string') {
+    const at = new Date(parsed.timestamp);
+    if (!isNaN(at.getTime())) {
+      meta.lastActivity = at;
+    }
+  }
+
+  // Context usage. Sidechain replies belong to subagents, which carry their own
+  // window, so counting them would report a context the session does not have.
+  if (parsed.type !== 'assistant' || parsed.isSidechain === true) {
+    return;
+  }
+  const usage = parsed.message?.usage;
+  if (!usage) {
+    return;
+  }
+  const resident =
+    (usage.input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0);
+  if (resident > 0) {
+    meta.contextTokens = resident;
+    if (typeof parsed.message?.model === 'string') {
+      meta.model = parsed.message.model;
+    }
+  }
 }
 
 /**

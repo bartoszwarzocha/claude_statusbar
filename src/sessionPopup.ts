@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SessionMetrics, PlanConfig, RateLimitWindow } from './types';
+import { SessionMetrics, PlanConfig, RateLimitWindow, SessionContextInfo } from './types';
 import { formatTimeRemaining, getStatusColor } from './sessionCalculator';
 import { formatCost } from './pricing';
 import { budgetPercent } from './plans';
@@ -207,11 +207,13 @@ function renderLimitTile(
   id: string,
   label: string,
   percent: number | undefined,
-  sub: string
+  sub: string,
+  /** Prefixes the value with ~ - the number is ours, not Claude Code's */
+  approximate = false
 ): string {
   const known = percent !== undefined;
   const color = known ? getStatusColor(percent) : 'var(--vscode-descriptionForeground)';
-  const value = known ? `${Math.round(percent)}%` : '—';
+  const value = known ? `${approximate ? '~' : ''}${Math.round(percent)}%` : '—';
   const width = known ? Math.min(percent, 100) : 0;
 
   return `
@@ -252,9 +254,12 @@ function ageLabel(updatedAt: Date): string {
  * One row per Claude Code session.
  *
  * The context window belongs to a conversation, not to the account, so with
- * several sessions open a single number would be meaningless - it would show
- * whichever session rendered its status line last. Each row carries its own
- * value and how old that reading is, since an idle session stops reporting.
+ * several sessions open a single number would be meaningless. Each row carries
+ * its own value and how old the reading is, since an idle session stops moving.
+ *
+ * A `~` marks a value the extension computed from the transcript rather than
+ * one Claude Code reported. Sessions running in the VS Code extension are always
+ * in that state: it renders no status line, so nothing feeds the bridge.
  */
 function renderSessionContexts(session: SessionMetrics): string {
   const rows = session.sessionContexts || [];
@@ -271,8 +276,8 @@ function renderSessionContexts(session: SessionMetrics): string {
       return `
             <div class="session-row">
                 <div class="session-row-head">
-                    <span class="session-row-name" title="${escapeHtml(row.title || row.sessionId)}">${escapeHtml(row.label)}</span>
-                    <span class="session-row-meta" id="${rowId}-meta">${known ? `${Math.round(row.contextPercent as number)}%` : '—'} · ${ageLabel(row.updatedAt)}</span>
+                    <span class="session-row-name" title="${escapeHtml(sessionTooltip(row))}">${escapeHtml(row.label)}</span>
+                    <span class="session-row-meta" id="${rowId}-meta">${percentLabel(row)} · ${ageLabel(row.updatedAt)}</span>
                 </div>
                 <div class="session-row-bar"><div class="session-row-fill" id="${rowId}-fill" style="width: ${percent}%; background-color: ${color};"></div></div>
             </div>`;
@@ -286,20 +291,53 @@ function renderSessionContexts(session: SessionMetrics): string {
         </div>`;
 }
 
+/** "47%" / "~47%" / "—" */
+function percentLabel(row: SessionContextInfo): string {
+  if (typeof row.contextPercent !== 'number') {
+    return '—';
+  }
+  return `${row.estimated ? '~' : ''}${Math.round(row.contextPercent)}%`;
+}
+
+/** Hover text: the conversation title, plus why a value is only an estimate */
+function sessionTooltip(row: SessionContextInfo): string {
+  const parts = [row.title || row.sessionId];
+  if (row.entrypoint === 'claude-vscode') {
+    parts.push('Running in the VS Code extension, which reports no usage to the bridge.');
+  }
+  if (row.estimated) {
+    parts.push('Context estimated from the transcript.');
+  }
+  return parts.join(' — ');
+}
+
+/**
+ * Caption under the rotating context tile: whose context is on screen, and
+ * where it sits in the rotation so the number is never anonymous.
+ */
+function contextCaption(rows: SessionContextInfo[], index: number): string {
+  const row = rows[index];
+  if (!row) {
+    return 'current Claude Code session';
+  }
+  return rows.length > 1 ? `${row.label} · ${index + 1}/${rows.length}` : row.label;
+}
+
 /** The three tiles shown once Claude Code reports usage */
 function renderLimitTiles(session: SessionMetrics): string {
   const fiveHour = session.rateLimits?.fiveHour;
   const sevenDay = session.rateLimits?.sevenDay;
 
-  // With several sessions open there is no single context value: use the most
-  // recently active one and name it, so the number is never anonymous.
-  const newest = (session.sessionContexts || [])[0];
-  const context = newest?.contextPercent ?? session.rateLimits?.contextUsedPercent;
-  const caption = newest ? newest.label : 'current Claude Code session';
+  // With several sessions open there is no single context value. The tile shows
+  // one session at a time and the page cycles through them, so every session is
+  // visible without the number silently changing owner.
+  const rows = session.sessionContexts || [];
+  const first = rows[0];
+  const context = first?.contextPercent ?? session.rateLimits?.contextUsedPercent;
 
   return `
         <div class="limit-tiles">
-            ${renderLimitTile('ctx', 'Context', context, caption)}
+            ${renderLimitTile('ctx', 'Context', context, contextCaption(rows, 0), Boolean(first?.estimated))}
             ${renderLimitTile('five-hour', '5-hour window', fiveHour?.usedPercent, resetCaption(fiveHour, false))}
             ${renderLimitTile('seven-day', '7-day window', sevenDay?.usedPercent, resetCaption(sevenDay, true))}
         </div>
@@ -320,24 +358,24 @@ function renderLimitTiles(session: SessionMetrics): string {
 function renderLimitsSection(session: SessionMetrics): string {
   const fiveHour = session.rateLimits?.fiveHour;
   const sevenDay = session.rateLimits?.sevenDay;
+  const hasSessions = (session.sessionContexts || []).length > 0;
 
   if (fiveHour || sevenDay) {
     return `
     <div class="section-header">
         <h2>Usage Limits</h2>
-        <div class="collapse-toggle" style="cursor: default;">reported by Claude Code</div>
+        <div class="collapse-toggle" style="cursor: default;">reported by Claude Code${freshnessSuffix(session)}</div>
     </div>
-    <div class="metric-section">${renderLimitTiles(session)}
+    <div class="metric-section">${renderLimitTiles(session)}${renderStaleWarning(session)}
     </div>`;
   }
 
-  if (session.rateLimitsStatus === 'waiting') {
-    return `
-    <div class="section-header">
-        <h2>Usage Limits</h2>
-        <div class="collapse-toggle" style="cursor: default;">no limits reported</div>
-    </div>
-    <div class="metric-section">
+  // No windows to show. The tiles still earn their place when at least one
+  // session's context is known - that part does not depend on the bridge.
+  const caption = session.rateLimitsStatus === 'waiting' ? 'no limits reported' : 'not enabled';
+  const hint =
+    session.rateLimitsStatus === 'waiting'
+      ? `
         <div class="limits-hint">
             <div>
                 <div class="limits-hint-title">Claude Code is not reporting any usage limits</div>
@@ -345,18 +383,10 @@ function renderLimitsSection(session: SessionMetrics): string {
                 <strong>Max</strong> subscription. If Claude Code signs in with an API key, Amazon Bedrock
                 or Google Cloud, usage is billed per token and there is no 5-hour or weekly limit to show —
                 the cost figures below are what you want. If you are on Pro or Max and just enabled this,
-                send one message in Claude Code and the bars will appear.</div>
+                send one message in Claude Code and the bars will appear.${vsCodeCaveat(session)}</div>
             </div>
-        </div>
-    </div>`;
-  }
-
-  return `
-    <div class="section-header">
-        <h2>Usage Limits</h2>
-        <div class="collapse-toggle" style="cursor: default;">not enabled</div>
-    </div>
-    <div class="metric-section">
+        </div>`
+      : `
         <div class="limits-hint">
             <div>
                 <div class="limits-hint-title">See how much of your plan you have actually used</div>
@@ -366,8 +396,76 @@ function renderLimitsSection(session: SessionMetrics): string {
                 <strong>Max</strong> subscription. One-time setup, undo at any time.</div>
             </div>
             <button class="limits-button" onclick="runCommand('claude-statusbar.enableRealLimits')">Turn on</button>
-        </div>
+        </div>`;
+
+  return `
+    <div class="section-header">
+        <h2>Usage Limits</h2>
+        <div class="collapse-toggle" style="cursor: default;">${caption}</div>
+    </div>
+    <div class="metric-section">${hasSessions ? renderLimitTiles(session) : ''}
+        ${hint}
     </div>`;
+}
+
+/** Anything older than this is worth putting a date on */
+const FRESHNESS_THRESHOLD_MS = 5 * 60 * 1000;
+
+/** Beyond this the percentages describe a window that has moved on without us */
+const STALE_THRESHOLD_MS = 30 * 60 * 1000;
+
+/**
+ * The 5-hour and 7-day figures are only as current as the last status line
+ * render. Saying so is the difference between "you have used 23%" and "you had
+ * used 23% two hours ago", which are very different pieces of advice.
+ */
+function freshnessSuffix(session: SessionMetrics): string {
+  const updatedAt = session.rateLimits?.updatedAt;
+  if (!updatedAt || Date.now() - updatedAt.getTime() < FRESHNESS_THRESHOLD_MS) {
+    return '';
+  }
+  return ` · ${ageLabel(updatedAt)}`;
+}
+
+/** True while a session is running under the VS Code extension */
+function hasVsCodeSession(session: SessionMetrics): boolean {
+  return (session.sessionContexts || []).some((row) => row.entrypoint === 'claude-vscode');
+}
+
+/**
+ * Explain a frozen number rather than let it look live. Claude Code hands the
+ * rate limits to status line commands only, and its VS Code extension has no
+ * status line, so working there leaves these figures at their last terminal
+ * reading until they age out entirely.
+ */
+function renderStaleWarning(session: SessionMetrics): string {
+  const updatedAt = session.rateLimits?.updatedAt;
+  if (!updatedAt || Date.now() - updatedAt.getTime() < STALE_THRESHOLD_MS) {
+    return '';
+  }
+  const reason = hasVsCodeSession(session)
+    ? `A session is running in the Claude Code <strong>VS Code extension</strong>, which renders no status
+       line and therefore reports nothing. Only the terminal (and this panel's own token and cost figures,
+       which come from the transcripts) keep moving.`
+    : `Claude Code reports these numbers only while a session renders its status line. Send a message in
+       the terminal to refresh them.`;
+  return `
+            <div class="limits-hint">
+                <div>
+                    <div class="limits-hint-title">These percentages are from ${ageLabel(updatedAt)}</div>
+                    <div class="info-label">${reason}</div>
+                </div>
+            </div>`;
+}
+
+/** Appended to the "no limits" hint when the VS Code extension is the reason */
+function vsCodeCaveat(session: SessionMetrics): string {
+  if (!hasVsCodeSession(session)) {
+    return '';
+  }
+  return ` A session is currently running in the Claude Code <strong>VS Code extension</strong>: it renders
+  no status line, so it reports no limits at all. Use the terminal for these windows — tokens, cost and the
+  per-session context below are read from the transcripts and work either way.`;
 }
 
 /**
@@ -523,7 +621,11 @@ export class SessionPopupPanel {
       Boolean(session.costLimit),
       Boolean(session.messageLimit),
     ].join(',');
-    return `${status}|${hasAnyWindow}|${budgets}|${sessions}`;
+    // The stale-data warning and the VS Code caveat are markup, not values, so
+    // they cannot appear through postMessage - crossing either needs a redraw.
+    const updatedAt = session.rateLimits?.updatedAt;
+    const stale = Boolean(updatedAt && Date.now() - updatedAt.getTime() >= STALE_THRESHOLD_MS);
+    return `${status}|${hasAnyWindow}|${budgets}|${sessions}|${stale}|${hasVsCodeSession(session)}`;
   }
 
   /**
@@ -1307,7 +1409,7 @@ export class SessionPopupPanel {
 
         // Update one tile. A null/undefined percent means "not reported": the tile
         // stays in place showing a dash so the grid keeps its three columns.
-        function updateLimitTile(id, percent, sub) {
+        function updateLimitTile(id, percent, sub, approximate) {
             const valueElem = document.getElementById(id + '-value');
             const fillElem = document.getElementById(id + '-fill');
             const subElem = document.getElementById(id + '-sub');
@@ -1316,7 +1418,7 @@ export class SessionPopupPanel {
             const known = typeof percent === 'number';
             const color = known ? limitColor(percent) : 'var(--vscode-descriptionForeground)';
 
-            valueElem.textContent = known ? Math.round(percent) + '%' : '—';
+            valueElem.textContent = known ? (approximate ? '~' : '') + Math.round(percent) + '%' : '—';
             valueElem.style.color = color;
             fillElem.style.width = (known ? Math.min(percent, 100) : 0) + '%';
             fillElem.style.backgroundColor = known ? color : 'transparent';
@@ -1347,8 +1449,7 @@ export class SessionPopupPanel {
                 const known = typeof row.contextPercent === 'number';
                 const meta = document.getElementById(id + '-meta');
                 if (meta) {
-                    meta.textContent = (known ? Math.round(row.contextPercent) + '%' : '—') +
-                        ' · ' + ageLabel(row.updatedAt);
+                    meta.textContent = percentLabel(row) + ' · ' + ageLabel(row.updatedAt);
                 }
                 const fill = document.getElementById(id + '-fill');
                 if (fill) {
@@ -1358,12 +1459,48 @@ export class SessionPopupPanel {
             }
         }
 
-        function updateLimitTiles(rateLimits, sessionContexts) {
-            const newest = (sessionContexts || [])[0];
-            updateSessionContexts(sessionContexts);
+        // ---- Context tile rotation ----
+        //
+        // The tile has room for one session, and with several open the "newest"
+        // one flips every time another session replies - the number appeared to
+        // jump at random. It now cycles instead, naming whose context it shows.
+        let contextRows = [];
+        let contextIndex = 0;
+        let fallbackContext;
+
+        function percentLabel(row) {
+            if (typeof row.contextPercent !== 'number') { return '—'; }
+            return (row.estimated ? '~' : '') + Math.round(row.contextPercent) + '%';
+        }
+
+        function contextCaption(rows, index) {
+            const row = rows[index];
+            if (!row) { return 'current Claude Code session'; }
+            return rows.length > 1 ? row.label + ' · ' + (index + 1) + '/' + rows.length : row.label;
+        }
+
+        function renderContextTile() {
+            const row = contextRows[contextIndex];
             updateLimitTile('ctx',
-                newest ? newest.contextPercent : (rateLimits && rateLimits.contextUsedPercent),
-                newest ? newest.label : 'current Claude Code session');
+                row ? row.contextPercent : fallbackContext,
+                contextCaption(contextRows, contextIndex),
+                Boolean(row && row.estimated));
+        }
+
+        const CONTEXT_ROTATION_MS = 2000;
+        setInterval(function () {
+            if (contextRows.length < 2) { return; }
+            contextIndex = (contextIndex + 1) % contextRows.length;
+            renderContextTile();
+        }, CONTEXT_ROTATION_MS);
+
+        function updateLimitTiles(rateLimits, sessionContexts) {
+            updateSessionContexts(sessionContexts);
+            contextRows = sessionContexts || [];
+            fallbackContext = rateLimits && rateLimits.contextUsedPercent;
+            // A session can end between refreshes; keep pointing at a real row.
+            if (contextIndex >= contextRows.length) { contextIndex = 0; }
+            renderContextTile();
             if (!rateLimits) { return; }
             updateLimitTile('five-hour', rateLimits.fiveHour && rateLimits.fiveHour.usedPercent,
                 resetCaption(rateLimits.fiveHour, false));

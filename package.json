@@ -2,7 +2,7 @@
   "name": "claude-statusbar",
   "displayName": "Claude Code Status Bar Monitor",
   "description": "Claude Code usage in your VS Code status bar: real 5-hour and weekly limits, accurate cost, tokens and context per session",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "bartosz-warzocha",
   "icon": "resources/icon.png",
   "repository": {
