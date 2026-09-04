@@ -67,6 +67,14 @@ receives them, and they are absent from the transcripts - both were checked, do 
 So `rateLimits.ts` installs a small status line script that mirrors that JSON to
 `~/.claude/claude-statusbar-bridge.json`, which the extension reads and watches.
 
+**Every session writes that one file, and each carries its own rate limits** - the ones it last
+received from the API. An idle session keeps reporting old numbers with a fresh timestamp, so last
+writer wins made the percentages flicker (measured with ten sessions open: 11%, 10%, 8% and 2%
+inside one second). The script merges the windows instead: a window whose reset has passed is
+discarded, a later `resets_at` wins outright, and inside one window the **higher percentage wins**,
+because usage only grows. `rate_limits_at` dates the winning reading separately from `written_at`,
+which is only the time of the write. Do not go back to overwriting the block wholesale.
+
 The data exists only for Claude.ai Pro/Max sign-ins. With an API key, Bedrock or Google Cloud the
 field is simply absent - that is the `rateLimitsStatus: 'waiting'` state, not an error.
 
@@ -122,7 +130,9 @@ billed - see `sessionParser.ts:calculateLimitTokens()`.
   (Claude Code >= 2.1.97) - **without it the status line runs only when a session redraws, so the
   limits freeze on an idle terminal and never move at all while the work is in the VS Code
   extension**. `ensureStatusLineRefreshInterval()` backfills it into installs from 0.5.0
-- `readRateLimits()`: parses the snapshot; returns undefined when stale (>12h) or without windows
+- `readRateLimits()`: parses the snapshot; returns undefined when stale (>12h) or without windows.
+  Applies the same highest-reading-wins merge as the script, remembering the best window per config
+  directory, so an install still running an older script is repaired at read time too
 - `getBridgeStatus()`: installed / wired into settings / delegate / snapshot age
 
 **sessionParser.ts** - `parseSessionFile()`, `parseSessionFileWithMeta()` (same single pass, plus the

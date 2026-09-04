@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-09-04
+
+The 5-hour and weekly percentages flickered between sessions - 11%, then 2%, then
+10% within a second - because every open session overwrote one shared file with
+its own view of the limits.
+
+### Fixed
+- **The 5-hour and 7-day percentages no longer jump between sessions.** Every
+  session renders the status line, and each one carries the rate limits *it* last
+  received from the API, so a session sitting idle kept overwriting the shared
+  snapshot with old numbers under a fresh timestamp. Measured with ten sessions
+  open: 11%, 10%, 8% and 2% inside one second, on an account that had used 11%.
+  The bridge script now merges the windows rather than clobbering them - usage
+  only grows inside a window, which makes the highest reading the most recent one,
+  and a window whose reset has passed is discarded. The reading side applies the
+  same rule, so an installation still running the older script is repaired too.
+  Every window Claude Code reports is merged, not just the two that are displayed.
+- **The limits are dated by the reading, not by the write.** The snapshot is
+  rewritten every few seconds by whichever session happened to render, which made
+  every reading look current. The "as of" note in the tooltip and the stale-data
+  warning in the panel now follow the last session that actually confirmed the
+  numbers.
+
+The installed status line script is refreshed automatically on the next VS Code
+start; no re-run of the setup is needed.
+
+---
+
 ## [0.5.1] - 2026-08-28
 
 Sessions running in the Claude Code **VS Code extension** were invisible to this

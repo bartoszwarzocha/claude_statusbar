@@ -24,7 +24,7 @@ const BRIDGE_STATE_FILE = 'claude-statusbar-bridge.json';
 /** One file per Claude Code session - a shared file would race with 10 sessions rendering */
 const BRIDGE_SESSIONS_DIR = 'claude-statusbar-sessions';
 /** Bumped whenever the installed script changes, so it can be refreshed silently */
-const BRIDGE_SCRIPT_VERSION = 2;
+const BRIDGE_SCRIPT_VERSION = 3;
 const BRIDGE_SCRIPT_FILE = 'claude-statusbar-bridge.js';
 const BRIDGE_BACKUP_FILE = 'claude-statusbar-bridge-backup.json';
 
@@ -61,6 +61,54 @@ const stateFile = path.join(dir, ${JSON.stringify(BRIDGE_STATE_FILE)});
 const backupFile = path.join(dir, ${JSON.stringify(BRIDGE_BACKUP_FILE)});
 const sessionsDir = path.join(dir, ${JSON.stringify(BRIDGE_SESSIONS_DIR)});
 
+// Every open session renders the status line, and each one carries the rate
+// limits IT last saw in an API response - a session sitting idle keeps
+// reporting its old numbers with a fresh timestamp. Last writer wins therefore
+// made the shared snapshot flicker between sessions (measured: 11%, 10% and 2%
+// inside one second with ten sessions open). So the windows are merged instead:
+// usage only grows inside a window, which makes the highest reading the newest.
+function mergeWindow(incoming, existing, now) {
+  // A window whose reset has passed says nothing about the one running now.
+  const current =
+    existing && typeof existing === 'object' &&
+    typeof existing.resets_at === 'number' && existing.resets_at * 1000 > now
+      ? existing
+      : null;
+  if (!incoming || typeof incoming !== 'object') { return current; }
+  if (!current) { return incoming; }
+  if (typeof incoming.resets_at === 'number' && incoming.resets_at !== current.resets_at) {
+    return incoming.resets_at > current.resets_at ? incoming : current;
+  }
+  const a = incoming.used_percentage;
+  const b = current.used_percentage;
+  if (typeof a !== 'number') { return current; }
+  if (typeof b !== 'number') { return incoming; }
+  return a >= b ? incoming : current;
+}
+
+// Merges every window Claude Code reports - Max plans have more than two - and
+// says whether this session's own reading won anywhere, which is what dates the
+// numbers, rather than the time of the write.
+function mergeRateLimits(incoming, existing, now) {
+  const inc = incoming && typeof incoming === 'object' ? incoming : {};
+  const old = existing && typeof existing === 'object' ? existing : {};
+  const keys = Object.keys(inc);
+  for (const key of Object.keys(old)) {
+    if (keys.indexOf(key) === -1) { keys.push(key); }
+  }
+  const merged = {};
+  let any = false;
+  let confirmed = false;
+  for (const key of keys) {
+    const win = mergeWindow(inc[key], old[key], now);
+    if (!win) { continue; }
+    merged[key] = win;
+    any = true;
+    if (win === inc[key]) { confirmed = true; }
+  }
+  return { limits: any ? merged : null, confirmed: confirmed };
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => { raw += c; });
@@ -70,9 +118,18 @@ process.stdin.on('end', () => {
 
   if (parsed) {
     try {
+      const now = Date.now();
+      let previous = null;
+      try { previous = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch (e) { /* first run */ }
+      const rl = mergeRateLimits(parsed.rate_limits, previous && previous.rate_limits, now);
+      const previousAt =
+        previous && typeof previous.rate_limits_at === 'number' ? previous.rate_limits_at : 0;
       const snapshot = {
-        written_at: Date.now(),
-        rate_limits: parsed.rate_limits || null,
+        written_at: now,
+        // When this session's reading lost to a higher one, the numbers are as
+        // old as whoever last confirmed them - say so instead of restamping.
+        rate_limits_at: (rl.confirmed || !previousAt) ? now : previousAt,
+        rate_limits: rl.limits,
         cost: parsed.cost || null,
         context_window: parsed.context_window
           ? {
@@ -215,6 +272,46 @@ function parseWindow(raw: any): RateLimitWindow | undefined {
 }
 
 /**
+ * The highest reading seen in the window that is currently running, per config
+ * directory.
+ *
+ * The bridge script merges the windows itself, but an install still running an
+ * older script clobbers the shared file with whatever session rendered last, so
+ * the same rule is applied here as well: within one window usage only grows,
+ * which makes the highest reading the newest one.
+ */
+const windowMemory = new Map<string, { fiveHour?: RateLimitWindow; sevenDay?: RateLimitWindow }>();
+
+/**
+ * Choose between a fresh reading and the best one seen so far. A later reset is
+ * a new window and wins outright; inside one window the higher percentage wins.
+ * Exported for testing.
+ */
+export function pickCurrentWindow(
+  incoming: RateLimitWindow | undefined,
+  remembered: RateLimitWindow | undefined,
+  now: number
+): RateLimitWindow | undefined {
+  // Once a window has reset, what it was holding says nothing about the new one.
+  const current = remembered && remembered.resetsAt.getTime() > now ? remembered : undefined;
+  if (!incoming) {
+    return current;
+  }
+  if (!current) {
+    return incoming;
+  }
+  if (incoming.resetsAt.getTime() !== current.resetsAt.getTime()) {
+    return incoming.resetsAt.getTime() > current.resetsAt.getTime() ? incoming : current;
+  }
+  return incoming.usedPercent >= current.usedPercent ? incoming : current;
+}
+
+/** Discard the remembered windows - the bridge is gone, so its readings are too */
+export function forgetRateLimitWindows(): void {
+  windowMemory.clear();
+}
+
+/**
  * Read the most recent snapshot written by the bridge script.
  * Returns undefined when the bridge is not installed, has never run, or the
  * data is too old to be meaningful.
@@ -244,14 +341,25 @@ export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | 
     return undefined;
   }
 
+  // Bridge v3 dates the windows separately from the write: the file is rewritten
+  // every few seconds by whichever session happened to render, but the numbers
+  // are only as fresh as the last session that actually confirmed them.
+  const limitsAt = typeof parsed.rate_limits_at === 'number' ? parsed.rate_limits_at : writtenAt;
+  if (Date.now() - limitsAt > MAX_SNAPSHOT_AGE_MS) {
+    return undefined;
+  }
+
+  const now = Date.now();
+  const remembered = windowMemory.get(dir) ?? {};
   const rl = parsed.rate_limits || {};
-  const fiveHour = parseWindow(rl.five_hour);
-  const sevenDay = parseWindow(rl.seven_day);
+  const fiveHour = pickCurrentWindow(parseWindow(rl.five_hour), remembered.fiveHour, now);
+  const sevenDay = pickCurrentWindow(parseWindow(rl.seven_day), remembered.sevenDay, now);
+  windowMemory.set(dir, { fiveHour, sevenDay });
 
   const snapshot: RateLimitSnapshot = {
     fiveHour,
     sevenDay,
-    updatedAt: new Date(writtenAt),
+    updatedAt: new Date(limitsAt),
   };
 
   if (parsed.cost && typeof parsed.cost.total_cost_usd === 'number') {
@@ -587,6 +695,10 @@ export function uninstallBridge(dir = getClaudeConfigDir()): void {
   } catch {
     /* already gone */
   }
+
+  // Nothing is feeding us any more, so the best-reading memory must go too -
+  // otherwise a reinstall would start from percentages nobody is confirming.
+  forgetRateLimitWindows();
 }
 
 /**
