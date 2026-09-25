@@ -46,11 +46,19 @@ export class StatusBarManager {
     const fiveHour = session.rateLimits?.fiveHour;
     const sevenDay = session.rateLimits?.sevenDay;
 
+    // While Claude Code is being asked for the first time the slots are held
+    // open with an ellipsis, so the numbers arriving a minute later do not look
+    // like something that was missing
+    const loading = !fiveHour && !sevenDay && session.rateLimitsStatus === 'loading';
+
     if (fiveHour) {
       parts.push(`5h: ${fiveHour.usedPercent.toFixed(0)}%`);
     }
     if (sevenDay) {
       parts.push(`7d: ${sevenDay.usedPercent.toFixed(0)}%`);
+    }
+    if (loading) {
+      parts.push('5h: …', '7d: …');
     }
 
     // Cost is always shown - it is computed from real token counts and prices
@@ -62,7 +70,7 @@ export class StatusBarManager {
     );
 
     // Without real rate limit data, fall back to token/message counters
-    if (!fiveHour && !sevenDay) {
+    if (!fiveHour && !sevenDay && !loading) {
       const tokenPercent = budgetPercent(session.totalTokens, planConfig.tokenLimit);
       parts.push(
         tokenPercent === undefined
@@ -112,9 +120,8 @@ export class StatusBarManager {
     const sevenDay = session.rateLimits?.sevenDay;
 
     if (fiveHour || sevenDay) {
-      // These come from the last status line render, which can be a while ago -
-      // the VS Code extension renders none at all. Date the reading rather than
-      // let a frozen percentage pass for a live one.
+      // Claude Code is asked every two minutes; if it has stopped answering,
+      // date the reading rather than let a frozen percentage pass for a live one.
       const updatedAt = session.rateLimits?.updatedAt;
       const age = updatedAt ? Date.now() - updatedAt.getTime() : 0;
       const asOf = updatedAt && age >= 5 * 60 * 1000 ? ` as of ${updatedAt.toLocaleTimeString()}` : '';
@@ -129,18 +136,12 @@ export class StatusBarManager {
           `- 7-day: ${sevenDay.usedPercent.toFixed(1)}% used, resets ${sevenDay.resetsAt.toLocaleString()}`
         );
       }
-      if (asOf && session.sessionContexts?.some((row) => row.entrypoint === 'claude-vscode')) {
-        lines.push(
-          '- _A session is running in the VS Code extension, which renders no status line and reports no limits._'
-        );
+      if (asOf && session.rateLimitsNote) {
+        lines.push(`- _Newer numbers are unavailable: ${session.rateLimitsNote}_`);
       }
       lines.push('');
     } else {
-      lines.push(
-        '**Usage limits**',
-        '- Not enabled — run `Claude: Enable Real Usage Limits`',
-        ''
-      );
+      lines.push('**Usage limits**', `- ${limitsStateText(session)}`, '');
     }
 
     lines.push(
@@ -212,6 +213,26 @@ export class StatusBarManager {
    */
   public dispose() {
     this.statusBarItem.dispose();
+  }
+}
+
+/** Why there are no 5-hour / weekly figures, in one line */
+function limitsStateText(session: SessionMetrics): string {
+  switch (session.rateLimitsStatus) {
+    case 'loading':
+      return 'Reading your 5-hour and weekly usage from Claude Code… The first read can take up to a minute.';
+    case 'waiting':
+      return (
+        '5-hour and weekly limits exist only on a Claude Pro or Max subscription; Claude Code reports none for ' +
+        'this sign-in (API key, Bedrock or Google Cloud are billed per token).' +
+        (session.rateLimitsNote ? ` Claude Code says: “${session.rateLimitsNote}”` : '')
+      );
+    case 'error':
+      return `Could not read the usage limits. ${session.rateLimitsNote ?? ''} Retrying automatically.`;
+    case 'off':
+      return 'Claude Code was not found on this computer (neither the VS Code extension nor the CLI).';
+    default:
+      return 'Not reported';
   }
 }
 

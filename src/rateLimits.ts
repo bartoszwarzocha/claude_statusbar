@@ -271,27 +271,46 @@ function parseWindow(raw: any): RateLimitWindow | undefined {
   };
 }
 
+/** A window plus when a source last confirmed it */
+type TrackedWindow = RateLimitWindow & { confirmedAt: number };
+
 /**
  * The highest reading seen in the window that is currently running, per config
- * directory.
+ * directory, from every source: the status line bridge and `claude -p /usage`.
  *
  * The bridge script merges the windows itself, but an install still running an
  * older script clobbers the shared file with whatever session rendered last, so
  * the same rule is applied here as well: within one window usage only grows,
  * which makes the highest reading the newest one.
  */
-const windowMemory = new Map<string, { fiveHour?: RateLimitWindow; sevenDay?: RateLimitWindow }>();
+const windowMemory = new Map<string, { fiveHour?: TrackedWindow; sevenDay?: TrackedWindow }>();
+
+/**
+ * How far apart two resets may be and still describe the same window. /usage
+ * prints the reset to the minute and at times rounds it to the hour ("12pm" for
+ * 11:59:59), while the bridge has it to the second. Consecutive windows are at
+ * least five hours apart, so an hour of slack cannot merge two different ones.
+ */
+const SAME_WINDOW_TOLERANCE_MS = 60 * 60 * 1000;
+
+function sameWindow(a: RateLimitWindow, b: RateLimitWindow): boolean {
+  const diff = Math.abs(a.resetsAt.getTime() - b.resetsAt.getTime());
+  if (!a.approximateReset && !b.approximateReset) {
+    return diff === 0;
+  }
+  return diff <= SAME_WINDOW_TOLERANCE_MS;
+}
 
 /**
  * Choose between a fresh reading and the best one seen so far. A later reset is
  * a new window and wins outright; inside one window the higher percentage wins.
  * Exported for testing.
  */
-export function pickCurrentWindow(
-  incoming: RateLimitWindow | undefined,
-  remembered: RateLimitWindow | undefined,
+export function pickCurrentWindow<T extends RateLimitWindow>(
+  incoming: T | undefined,
+  remembered: T | undefined,
   now: number
-): RateLimitWindow | undefined {
+): T | undefined {
   // Once a window has reset, what it was holding says nothing about the new one.
   const current = remembered && remembered.resetsAt.getTime() > now ? remembered : undefined;
   if (!incoming) {
@@ -300,44 +319,95 @@ export function pickCurrentWindow(
   if (!current) {
     return incoming;
   }
-  if (incoming.resetsAt.getTime() !== current.resetsAt.getTime()) {
+  if (!sameWindow(incoming, current)) {
     return incoming.resetsAt.getTime() > current.resetsAt.getTime() ? incoming : current;
   }
-  return incoming.usedPercent >= current.usedPercent ? incoming : current;
+  const winner = incoming.usedPercent >= current.usedPercent ? incoming : current;
+  // Keep the to-the-second reset when one of the two readings has it, so the
+  // countdown does not jump by a minute every time the other source reports.
+  const precise = !incoming.approximateReset ? incoming : !current.approximateReset ? current : winner;
+  return precise === winner
+    ? winner
+    : { ...winner, resetsAt: precise.resetsAt, approximateReset: precise.approximateReset };
 }
 
-/** Discard the remembered windows - the bridge is gone, so its readings are too */
+/**
+ * Fold one reading into the remembered windows and return the result.
+ *
+ * A reading that loses only by rounding - /usage prints whole percentages -
+ * still counts as confirming the window, otherwise the numbers would be dated
+ * as old while a source keeps reporting them every two minutes.
+ */
+function rememberReading(
+  dir: string,
+  fiveHour: RateLimitWindow | undefined,
+  sevenDay: RateLimitWindow | undefined,
+  confirmedAt: number,
+  now: number
+): { fiveHour?: TrackedWindow; sevenDay?: TrackedWindow } {
+  const remembered = windowMemory.get(dir) ?? {};
+  const fold = (incoming: RateLimitWindow | undefined, current: TrackedWindow | undefined) => {
+    const tracked = incoming ? { ...incoming, confirmedAt } : undefined;
+    const picked = pickCurrentWindow(tracked, current, now);
+    if (
+      picked &&
+      tracked &&
+      picked !== tracked &&
+      sameWindow(picked, tracked) &&
+      tracked.usedPercent >= picked.usedPercent - 1 &&
+      confirmedAt > picked.confirmedAt
+    ) {
+      return { ...picked, confirmedAt };
+    }
+    return picked;
+  };
+  const next = {
+    fiveHour: fold(fiveHour, remembered.fiveHour),
+    sevenDay: fold(sevenDay, remembered.sevenDay),
+  };
+  windowMemory.set(dir, next);
+  return next;
+}
+
+/**
+ * Record what `claude -p /usage` reported, so readRateLimits() serves it
+ * alongside - and merged with - whatever the bridge provides.
+ */
+export function recordLimitsReading(
+  reading: { fiveHour?: RateLimitWindow; sevenDay?: RateLimitWindow },
+  at: Date,
+  dir = getClaudeConfigDir()
+): void {
+  rememberReading(dir, reading.fiveHour, reading.sevenDay, at.getTime(), Date.now());
+}
+
+/** Discard the remembered windows - their sources are gone, so their readings are too */
 export function forgetRateLimitWindows(): void {
   windowMemory.clear();
 }
 
-/**
- * Read the most recent snapshot written by the bridge script.
- * Returns undefined when the bridge is not installed, has never run, or the
- * data is too old to be meaningful.
- */
-export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | undefined {
-  const file = bridgeStatePath(dir);
-
-  let raw: string;
-  try {
-    if (!fs.existsSync(file)) {
-      return undefined;
-    }
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
+/** A window without its bookkeeping, as handed to the UI */
+function publicWindow(window: TrackedWindow | undefined, now: number): RateLimitWindow | undefined {
+  if (!window || now - window.confirmedAt > MAX_SNAPSHOT_AGE_MS) {
     return undefined;
   }
+  return { usedPercent: window.usedPercent, resetsAt: window.resetsAt };
+}
 
+/** The bridge snapshot, when there is one young enough to mean anything */
+function readBridgeSnapshot(dir: string, now: number): { parsed: any; limitsAt: number } | undefined {
   let parsed: any;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(fs.readFileSync(bridgeStatePath(dir), 'utf8'));
   } catch {
+    return undefined; // not installed, never ran, or mid-write
+  }
+  if (!parsed || typeof parsed !== 'object') {
     return undefined;
   }
 
   const writtenAt = typeof parsed.written_at === 'number' ? parsed.written_at : 0;
-  if (!writtenAt || Date.now() - writtenAt > MAX_SNAPSHOT_AGE_MS) {
+  if (!writtenAt || now - writtenAt > MAX_SNAPSHOT_AGE_MS) {
     return undefined;
   }
 
@@ -345,21 +415,52 @@ export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | 
   // every few seconds by whichever session happened to render, but the numbers
   // are only as fresh as the last session that actually confirmed them.
   const limitsAt = typeof parsed.rate_limits_at === 'number' ? parsed.rate_limits_at : writtenAt;
-  if (Date.now() - limitsAt > MAX_SNAPSHOT_AGE_MS) {
+  if (now - limitsAt > MAX_SNAPSHOT_AGE_MS) {
     return undefined;
   }
+  return { parsed, limitsAt };
+}
 
+/** When the bridge last confirmed the rate limits, if it is feeding us at all */
+export function bridgeLimitsAge(dir = getClaudeConfigDir()): number | undefined {
   const now = Date.now();
-  const remembered = windowMemory.get(dir) ?? {};
+  const bridge = readBridgeSnapshot(dir, now);
+  if (!bridge?.parsed.rate_limits) {
+    return undefined;
+  }
+  return now - bridge.limitsAt;
+}
+
+/**
+ * The current 5-hour and 7-day windows, merged from the bridge snapshot and the
+ * readings recorded by recordLimitsReading(). Returns undefined when neither
+ * source has anything current.
+ */
+export function readRateLimits(dir = getClaudeConfigDir()): RateLimitSnapshot | undefined {
+  const now = Date.now();
+  const bridge = readBridgeSnapshot(dir, now);
+  const parsed = bridge?.parsed ?? {};
   const rl = parsed.rate_limits || {};
-  const fiveHour = pickCurrentWindow(parseWindow(rl.five_hour), remembered.fiveHour, now);
-  const sevenDay = pickCurrentWindow(parseWindow(rl.seven_day), remembered.sevenDay, now);
-  windowMemory.set(dir, { fiveHour, sevenDay });
+
+  const merged = rememberReading(
+    dir,
+    bridge ? parseWindow(rl.five_hour) : undefined,
+    bridge ? parseWindow(rl.seven_day) : undefined,
+    bridge?.limitsAt ?? 0,
+    now
+  );
+
+  const fiveHour = publicWindow(merged.fiveHour, now);
+  const sevenDay = publicWindow(merged.sevenDay, now);
+
+  const confirmed = [fiveHour && merged.fiveHour, sevenDay && merged.sevenDay]
+    .filter((w): w is TrackedWindow => Boolean(w))
+    .map((w) => w.confirmedAt);
 
   const snapshot: RateLimitSnapshot = {
     fiveHour,
     sevenDay,
-    updatedAt: new Date(limitsAt),
+    updatedAt: new Date(confirmed.length ? Math.max(...confirmed) : now),
   };
 
   if (parsed.cost && typeof parsed.cost.total_cost_usd === 'number') {

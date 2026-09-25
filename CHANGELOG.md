@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.3] - 2026-09-25
+
+The 5-hour and weekly percentages stayed empty for anyone who never ran Claude
+Code in a terminal: they came only from the status line, which the Claude Code VS
+Code extension does not render.
+
+### Fixed
+- **The 5-hour and weekly limits now work without a terminal and without any
+  setup.** The extension asks Claude Code itself: it runs `claude -p /usage` in the
+  background every two minutes and reads the answer. The program is the copy that
+  ships with the Claude Code VS Code extension (found through VS Code, not `PATH`)
+  or the CLI (on `PATH` or in the standard install locations). Claude Code answers
+  with its own sign-in; the extension never reads credentials. No model is called,
+  so it costs nothing, and no session is recorded, no hooks run and no project
+  folder is created.
+- **Empty tiles always say why.** While the first reading is in progress (up to a
+  minute) the status bar shows `5h: … | 7d: …` and the panel explains; an account
+  without limits (API key, Bedrock, Google Cloud) is told so, quoting Claude Code;
+  a reading that failed says what went wrong and that it is being retried.
+
+### Changed
+- The status line bridge is optional. It is no longer suggested on first start
+  and the panel no longer asks to turn it on; when installed, its readings are
+  merged with Claude Code's answers.
+- Several VS Code windows share one reading instead of each starting Claude Code.
+- The parser of the `/usage` text accepts the formats Claude Code uses and
+  plausible variations of them. Should `/usage` ever reach the model instead of
+  running locally, the charge is detected on the first call and that version of
+  Claude Code is not asked again.
+
+---
+
 ## [0.5.2] - 2026-09-04
 
 The 5-hour and weekly percentages flickered between sessions - 11%, then 2%, then

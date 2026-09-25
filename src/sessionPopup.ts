@@ -371,31 +371,16 @@ function renderLimitsSection(session: SessionMetrics): string {
   }
 
   // No windows to show. The tiles still earn their place when at least one
-  // session's context is known - that part does not depend on the bridge.
-  const caption = session.rateLimitsStatus === 'waiting' ? 'no limits reported' : 'not enabled';
-  const hint =
-    session.rateLimitsStatus === 'waiting'
-      ? `
+  // session's context is known - that part does not depend on the limits.
+  // Every state says why the windows are empty: a blank tile with no reason
+  // looks like a fault even when nothing is wrong.
+  const { caption, title, body } = limitsStateMessage(session);
+  const hint = `
         <div class="limits-hint">
             <div>
-                <div class="limits-hint-title">Claude Code is not reporting any usage limits</div>
-                <div class="info-label">These windows exist only on a Claude.ai <strong>Pro</strong> or
-                <strong>Max</strong> subscription. If Claude Code signs in with an API key, Amazon Bedrock
-                or Google Cloud, usage is billed per token and there is no 5-hour or weekly limit to show —
-                the cost figures below are what you want. If you are on Pro or Max and just enabled this,
-                send one message in Claude Code and the bars will appear.${vsCodeCaveat(session)}</div>
+                <div class="limits-hint-title">${title}</div>
+                <div class="info-label">${body}</div>
             </div>
-        </div>`
-      : `
-        <div class="limits-hint">
-            <div>
-                <div class="limits-hint-title">See how much of your plan you have actually used</div>
-                <div class="info-label">Claude Code knows how much of your 5-hour and weekly limits you
-                have consumed, and when each one resets. Turning this on lets the extension read those
-                numbers and show them here as progress bars. Requires a Claude.ai <strong>Pro</strong> or
-                <strong>Max</strong> subscription. One-time setup, undo at any time.</div>
-            </div>
-            <button class="limits-button" onclick="runCommand('claude-statusbar.enableRealLimits')">Turn on</button>
         </div>`;
 
   return `
@@ -406,6 +391,46 @@ function renderLimitsSection(session: SessionMetrics): string {
     <div class="metric-section">${hasSessions ? renderLimitTiles(session) : ''}
         ${hint}
     </div>`;
+}
+
+/** Caption, headline and explanation for each state without windows */
+function limitsStateMessage(session: SessionMetrics): { caption: string; title: string; body: string } {
+  const note = session.rateLimitsNote ? escapeHtml(session.rateLimitsNote) : '';
+  switch (session.rateLimitsStatus) {
+    case 'loading':
+      return {
+        caption: 'reading…',
+        title: 'Reading your usage limits from Claude Code…',
+        body: `The extension asks Claude Code for your 5-hour and weekly usage in the background. The first
+               answer can take up to a minute, while Claude Code looks through your recent sessions; after
+               that the numbers refresh every two minutes. Nothing needs to be set up.`,
+      };
+    case 'waiting':
+      return {
+        caption: 'no limits reported',
+        title: 'Claude Code reports no usage limits for this account',
+        body: `5-hour and weekly limits exist only on a Claude <strong>Pro</strong> or <strong>Max</strong>
+               subscription. When Claude Code signs in with an API key, Amazon Bedrock or Google Cloud,
+               usage is billed per token and there is no limit to show — the cost figures below are what
+               you want.${note ? ` Claude Code says: <em>“${note}”</em>` : ''}`,
+      };
+    case 'error':
+      return {
+        caption: 'unavailable',
+        title: 'The usage limits could not be read',
+        body: `${note || 'Claude Code did not answer.'} The extension keeps retrying on its own; details are
+               in the <em>Claude Status Bar Debug</em> output channel. Tokens, cost and context below are read
+               from your local session files and are not affected.`,
+      };
+    default:
+      return {
+        caption: 'unavailable',
+        title: 'Claude Code was not found',
+        body: `The usage limits are read from Claude Code, but neither the Claude Code VS Code extension nor
+               the <code>claude</code> command-line tool was found on this computer. Tokens, cost and context
+               below are read from your local session files and are not affected.`,
+      };
+  }
 }
 
 /** Anything older than this is worth putting a date on */
@@ -427,28 +452,19 @@ function freshnessSuffix(session: SessionMetrics): string {
   return ` · ${ageLabel(updatedAt)}`;
 }
 
-/** True while a session is running under the VS Code extension */
-function hasVsCodeSession(session: SessionMetrics): boolean {
-  return (session.sessionContexts || []).some((row) => row.entrypoint === 'claude-vscode');
-}
-
 /**
- * Explain a frozen number rather than let it look live. Claude Code hands the
- * rate limits to status line commands only, and its VS Code extension has no
- * status line, so working there leaves these figures at their last terminal
- * reading until they age out entirely.
+ * Explain a frozen number rather than let it look live. Claude Code is asked
+ * every two minutes, so a reading this old means it has stopped answering.
  */
 function renderStaleWarning(session: SessionMetrics): string {
   const updatedAt = session.rateLimits?.updatedAt;
   if (!updatedAt || Date.now() - updatedAt.getTime() < STALE_THRESHOLD_MS) {
     return '';
   }
-  const reason = hasVsCodeSession(session)
-    ? `A session is running in the Claude Code <strong>VS Code extension</strong>, which renders no status
-       line and therefore reports nothing. Only the terminal (and this panel's own token and cost figures,
-       which come from the transcripts) keep moving.`
-    : `Claude Code reports these numbers only while a session renders its status line. Send a message in
-       the terminal to refresh them.`;
+  const reason = session.rateLimitsNote
+    ? `Newer numbers could not be read: ${escapeHtml(session.rateLimitsNote)} The extension keeps retrying
+       on its own.`
+    : `Claude Code has not reported newer numbers since then. The extension keeps asking on its own.`;
   return `
             <div class="limits-hint">
                 <div>
@@ -456,16 +472,6 @@ function renderStaleWarning(session: SessionMetrics): string {
                     <div class="info-label">${reason}</div>
                 </div>
             </div>`;
-}
-
-/** Appended to the "no limits" hint when the VS Code extension is the reason */
-function vsCodeCaveat(session: SessionMetrics): string {
-  if (!hasVsCodeSession(session)) {
-    return '';
-  }
-  return ` A session is currently running in the Claude Code <strong>VS Code extension</strong>: it renders
-  no status line, so it reports no limits at all. Use the terminal for these windows — tokens, cost and the
-  per-session context below are read from the transcripts and work either way.`;
 }
 
 /**
@@ -621,11 +627,11 @@ export class SessionPopupPanel {
       Boolean(session.costLimit),
       Boolean(session.messageLimit),
     ].join(',');
-    // The stale-data warning and the VS Code caveat are markup, not values, so
-    // they cannot appear through postMessage - crossing either needs a redraw.
+    // The stale-data warning and the explanation of a missing reading are
+    // markup, not values, so they cannot change through postMessage.
     const updatedAt = session.rateLimits?.updatedAt;
     const stale = Boolean(updatedAt && Date.now() - updatedAt.getTime() >= STALE_THRESHOLD_MS);
-    return `${status}|${hasAnyWindow}|${budgets}|${sessions}|${stale}|${hasVsCodeSession(session)}`;
+    return `${status}|${hasAnyWindow}|${budgets}|${sessions}|${stale}|${session.rateLimitsNote ?? ''}`;
   }
 
   /**

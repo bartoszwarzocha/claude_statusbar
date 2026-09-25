@@ -10,8 +10,9 @@ usage, cost, tokens, messages and a session countdown.
 **Status bar format** depends on what data is available:
 
 ```
-Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34          bridge enabled
-Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70         bridge disabled, no budgets
+Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34          Pro/Max: limits read from Claude Code
+Reset: 02:13:20 | 5h: … | 7d: … | C: $31.34             first /usage answer pending
+Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70         no limits (API key), no budgets
 ```
 
 `T` and `M` show a percentage instead of a raw value when the user sets a budget, and are omitted
@@ -59,13 +60,55 @@ There are **two**, and they answer different questions.
 - Env override: `CLAUDE_CONFIG_DIR`
 - One `.jsonl` per session; each line a JSON object; assistant lines carry `message.usage`
 
-**2. The status line bridge** - how much of the plan is left.
+**2. `claude -p /usage`** - how much of the plan is left. The primary source.
+
+`usageProbe.ts` runs Claude Code's own `/usage` local command in the background every two minutes
+and parses the text. It works for everyone with zero setup, which is a hard requirement: the user
+must never have to configure anything - no keys, URLs, settings or commands.
+
+- **The executable** is found, not configured: the CLI on `PATH` or in the standard install
+  locations, then the copy bundled with the Claude Code VS Code extension
+  (`<extensionPath>/resources/native-binary/claude[.exe]`, located via
+  `vscode.extensions.all` - it is **not** on PATH). Every user has one or the other.
+- **Measured: cost 0, zero turns**, for both 2.1.241 (bundled) and 2.1.282 (CLI). The first run
+  takes ~40 s (Claude Code analyses local history for the "what's contributing" section), later
+  ones 5-15 s - hence the `loading` state and its message.
+- **Guards on every run**: `--no-session-persistence` (otherwise each probe leaves a transcript
+  and shows up as a session), `--settings {"disableAllHooks":true,"autoMemoryEnabled":false}`
+  (hooks are the user's business; auto-memory otherwise creates an empty project folder for the
+  probe's cwd), `--model haiku --max-budget-usd 0.05` in case `/usage` ever reaches the model.
+  `interpretProbeOutput()` treats any cost or turn as `charged`, and the scheduler bans that
+  executable (path + mtime, so an update lifts it). Do **not** use `--bare`: it disables OAuth.
+- **Always `execFile`, never a shell** for `.exe`/native binaries. Git Bash rewrites `/usage` into
+  `C:/Program Files/Git/usage`, which goes to the model as a prompt - that cost real money once.
+  A Windows `.cmd` shim needs `shell: true`; then the settings travel as a file, because cmd.exe
+  mangles the JSON quoting.
+- **The text is for people and will change.** The parser identifies windows by label (`Current
+  session`, `Current week (all models)`; model-scoped weeks like `(Fable)` / `(Sonnet only)` are
+  skipped), handles the one-line `-p` layout and the multi-line dialog layout, "used" and "left",
+  and every plausible reset format (see `parseResetTime()` and `usageProbe.test.ts`). The same
+  Claude Code version prints `11:40am` / `12pm` on one run and `11:39am` / `11:59am` on the next.
+  Anything unreadable becomes the `error` state with a message, never silent empty tiles.
+- **Shared between VS Code windows** through `usage-probe.json` in global storage: whoever probes
+  writes the result, the others adopt it; `runningSince` stops two windows probing at once.
+- The extension never reads `~/.claude/.credentials.json` or calls Anthropic's API itself. An
+  undocumented OAuth usage endpoint exists; using the user's token was rejected by the owner.
+
+**3. The status line bridge** - optional, live while a terminal session is open.
 
 Claude Code exposes `rate_limits.five_hour` / `.seven_day` (percentage used + reset timestamp) and
-`context_window.used_percentage` **only** in the JSON it pipes to a status line command. No hook
-receives them, and they are absent from the transcripts - both were checked, do not go looking again.
-So `rateLimits.ts` installs a small status line script that mirrors that JSON to
-`~/.claude/claude-statusbar-bridge.json`, which the extension reads and watches.
+`context_window.used_percentage` in the JSON it pipes to a status line command. No hook receives
+them, and they are absent from the transcripts - both were checked, do not go looking again.
+`rateLimits.ts` can install a small status line script that mirrors that JSON to
+`~/.claude/claude-statusbar-bridge.json`, which the extension reads and watches. It is not
+suggested any more and nothing depends on it; when present, the probe skips its run while the
+bridge reported within the last minute.
+
+**Merging the two** (`rateLimits.ts:readRateLimits()`): every reading is folded into one
+remembered window per kind with `pickCurrentWindow()`, and each window carries when a source last
+confirmed it. /usage resets are minute-precise and sometimes rounded to the hour
+(`approximateReset`), so two resets within an hour of each other are the same window - consecutive
+windows are at least five hours apart. The precise bridge reset is kept when both exist.
 
 **Every session writes that one file, and each carries its own rate limits** - the ones it last
 received from the API. An idle session keeps reporting old numbers with a fresh timestamp, so last
@@ -80,20 +123,17 @@ field is simply absent - that is the `rateLimitsStatus: 'waiting'` state, not an
 
 **The bridge cannot see the VS Code extension.** Claude Code's own VS Code extension
 (`entrypoint: "claude-vscode"` in the transcripts) has no status line, so it never runs the script:
-no snapshot, no per-session file. Working there leaves the 5-hour and weekly percentages frozen at
-the last terminal reading until they age out. There is no second source - `claude` has no `usage`
-subcommand, no OTEL metric carries rate limits, and nothing else under `~/.claude` holds them; this
-was checked, do not go looking again. What the extension does instead is (a) date the reading rather
-than let it pass for live, and (b) derive everything it can from the transcripts, which every
-entrypoint writes identically.
+no snapshot, no per-session file. That is why the probe above exists - before it, working only in
+the VS Code extension left the 5-hour and weekly tiles permanently empty. Context per session is
+still derived from the transcripts for such sessions.
 
-**3. `~/.claude/sessions/<pid>.json` - which sessions are open.** Claude Code writes one file per
+**4. `~/.claude/sessions/<pid>.json` - which sessions are open.** Claude Code writes one file per
 running process with `sessionId`, `cwd`, `entrypoint`, a derived `name` and `status`, and removes it
 on exit. `liveSessions.ts` reads them and checks the PID with `process.kill(pid, 0)` (works on
 Windows), because a crash leaves the file behind. This is the authority for the session list - a
 timeout is wrong in one direction or the other, and both directions were reported as bugs.
 
-**4. Transcripts again, for session discovery.** `sessionParser.ts:parseSessionFileWithMeta()`
+**5. Transcripts again, for session discovery.** `sessionParser.ts:parseSessionFileWithMeta()`
 returns `TranscriptMeta` alongside the messages - `sessionId`, `cwd`, `entrypoint`, the `ai-title`
 line, and the tokens resident at the last non-sidechain reply. `sessionRegistry.ts` merges that with
 the bridge's per-session files: transcripts decide which sessions exist, the bridge sharpens the ones
@@ -124,13 +164,24 @@ billed - see `sessionParser.ts:calculateLimitTokens()`.
   almost exclusively and they cost 2x base input, not 1.25x**
 - `calculateMessageCost()`: all token categories + `inference_geo: "us"` 1.1x + web search
 
-**rateLimits.ts** - the bridge
+**usageProbe.ts** - `claude -p /usage` (see Data sources)
+- `findClaudeExecutables()`, `runUsageProbe()`, `interpretProbeOutput()`, `parseUsageText()`,
+  `parseResetTime()` - no `vscode` import, so all of it runs under plain Node
+- `UsageProbeScheduler`: every 2 min, 15 s to the next candidate after a failure, 5 min once all
+  failed; a failure never replaces a good reading. `extension.ts:describeLimits()` maps its state
+  to `rateLimitsStatus` + `rateLimitsNote`, and the status bar, tooltip and panel all explain
+  every non-live state in words
+
+**rateLimits.ts** - merging the readings, and the optional bridge
+- `recordLimitsReading()`: where the probe's answers enter; `readRateLimits()` merges them with the
+  bridge snapshot
 - `installBridge()` / `uninstallBridge()`: writes the status line script, backs up `settings.json`,
   preserves any pre-existing status line by delegating to it. Also sets `statusLine.refreshInterval`
   (Claude Code >= 2.1.97) - **without it the status line runs only when a session redraws, so the
   limits freeze on an idle terminal and never move at all while the work is in the VS Code
   extension**. `ensureStatusLineRefreshInterval()` backfills it into installs from 0.5.0
-- `readRateLimits()`: parses the snapshot; returns undefined when stale (>12h) or without windows.
+- `readRateLimits()`: merges the remembered readings with the bridge snapshot; a window not
+  confirmed by any source for 12 h is dropped; undefined when no window is left.
   Applies the same highest-reading-wins merge as the script, remembering the best window per config
   directory, so an install still running an older script is repaired at read time too
 - `getBridgeStatus()`: installed / wired into settings / delegate / snapshot age
@@ -227,3 +278,7 @@ There is no test runner wired up for the webview. What has worked:
 - For live-refresh behaviour, extract the page `<script>` and execute it against a DOM stub - stub
   `setInterval`, or the countdown keeps the Node process alive
 - Compare cost calculations against the real transcripts in `~/.claude/projects/`
+- `npm run compile-tests && node out/usageProbe.test.js && node out/rateLimitMerge.test.js`
+- The probe end to end: `require('./out/usageProbe.js')` and call `runUsageProbe()` on each path
+  `findClaudeExecutables()` returns. From Git Bash never run `claude -p /usage` by hand without
+  `MSYS_NO_PATHCONV=1` - see the path-rewrite note above

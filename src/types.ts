@@ -70,7 +70,16 @@ export type ModelTier = 'fable' | 'opus' | 'sonnet' | 'haiku' | 'unknown';
 export interface RateLimitWindow {
   usedPercent: number; // 0-100, authoritative (comes from the API)
   resetsAt: Date;
+  /**
+   * The reset was read from /usage text, which shows it to the minute and
+   * sometimes rounds it to the hour. Two readings of one window can therefore
+   * disagree by a few minutes - see pickCurrentWindow().
+   */
+  approximateReset?: boolean;
 }
+
+/** See SessionMetrics.rateLimitsStatus */
+export type RateLimitsStatus = 'live' | 'loading' | 'waiting' | 'error' | 'off';
 
 /**
  * Authoritative rate limit data bridged from Claude Code's status line.
@@ -152,13 +161,18 @@ export interface SessionMetrics {
 
   /**
    * Why the limits are or are not available:
-   *  - 'off'     the bridge is not installed
-   *  - 'waiting' the bridge runs but Claude Code reports no limits, which means
-   *              either an API key / Bedrock / Vertex login (no such windows
-   *              exist) or no model response yet in this session
    *  - 'live'    real percentages are being read
+   *  - 'loading' Claude Code is being asked for the first time; the first answer
+   *              can take up to a minute
+   *  - 'waiting' Claude Code answers but reports no limits: an API key, Bedrock
+   *              or Vertex login, where no such windows exist
+   *  - 'error'   Claude Code was found but its answer could not be read
+   *  - 'off'     no Claude Code program was found and no bridge is feeding us
    */
-  rateLimitsStatus: 'off' | 'waiting' | 'live';
+  rateLimitsStatus: RateLimitsStatus;
+
+  /** Claude Code's own words when it reports no limits, or what went wrong */
+  rateLimitsNote?: string;
 
   /** Rolling 7-day totals, used when no bridge data is available */
   weekTokens: number;

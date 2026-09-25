@@ -10,12 +10,10 @@ Claude Code writes the same way whichever way you start it — the **terminal CL
 the **Claude Code VS Code extension**, or both at once. Every running session is
 listed, labelled by its project folder.
 
-The one exception is the 5-hour and weekly limit percentages. Claude Code hands
-those to a status line command, and its VS Code extension renders no status line,
-so keep **one terminal session open** and those numbers stay current for all of
-them — they are account-wide, and an idle session refreshes them every ten seconds.
-With no terminal session at all the panel keeps the last reading and tells you how
-old it is. See [Real usage limits](#real-usage-limits-recommended).
+The 5-hour and weekly limit percentages come from Claude Code itself, which the
+extension asks in the background — using the copy of Claude Code that ships with
+its VS Code extension, or the CLI. Nothing to set up, and no terminal needed. See
+[Real usage limits](#real-usage-limits).
 
 ## 📊 Status Bar & Tooltip
 
@@ -23,14 +21,15 @@ The extension starts monitoring when VS Code opens. What the bar shows depends o
 whether it can read your real limits:
 
 ```
-Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34      real limits enabled
-Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70     measured values only
+Reset: 02:13:20 | 5h: 6% | 7d: 35% | C: $31.34      Pro / Max subscription
+Reset: 02:13:20 | 5h: … | 7d: … | C: $31.34         first reading in progress
+Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70     API key: no limits exist
 ```
 
 **Status Bar Components:**
 - **Reset** — countdown to the session reset (HH:MM:SS)
-- **5h** / **7d** — percentage of the real 5-hour and weekly limits used, when
-  [enabled](#real-usage-limits-recommended)
+- **5h** / **7d** — percentage of the real 5-hour and weekly limits used (see
+  [Real usage limits](#real-usage-limits))
 - **C** — session cost, with `/budget` and a percentage if you set one
 - **T** — tokens used (input + output), as a percentage if you set a budget
 - **M** — messages, as a percentage if you set a budget
@@ -54,7 +53,7 @@ Click the status bar to open the statistics panel.
 
 **Usage Limits** — three tiles with the real percentage consumed of the context
 window, the 5-hour window and the weekly window, each with its reset time, plus a
-per-session context list. See [Real usage limits](#real-usage-limits-recommended).
+per-session context list. See [Real usage limits](#real-usage-limits).
 
 **Token Usage, Cost Usage, Message Count** — each section shows one bar:
 - a **progress bar** with a percentage, when you have set a budget for that metric
@@ -73,16 +72,16 @@ invented percentage.
 - **Usage by Model**: shown here when a token budget is set (otherwise it is
   already the composition bar above)
 
-## Real usage limits (recommended)
+## Real usage limits
 
 Claude Code reports the **actual** percentage of your 5-hour and weekly limits you
-have consumed, together with the exact reset timestamps. This is the only figure
-that answers "how close am I to being cut off" — token and cost counts cannot,
-because real consumption is weighted by model and effort level.
+have consumed, together with the reset times. This is the only figure that answers
+"how close am I to being cut off" — token and cost counts cannot, because real
+consumption is weighted by model and effort level.
 
-**To turn it on:** open the statistics popup (click the status bar) and press
-**Turn on** in the *Usage Limits* section. The command palette equivalent is
-`Claude: Enable Real Usage Limits`.
+**Nothing to turn on.** The figures appear on their own shortly after VS Code
+starts — the first reading can take up to a minute, and the status bar shows
+`5h: … | 7d: …` meanwhile. After that they refresh every two minutes.
 
 **What you get** — three tiles in the popup, plus `5h` and `7d` segments in the
 status bar:
@@ -114,35 +113,38 @@ changes owner without saying so. A `~` marks a percentage the extension worked o
 from the transcript rather than one Claude Code reported. The 5-hour and weekly
 figures need no such split — they are account-wide and identical in every session.
 
-**How it works.** That data is only exposed in the JSON Claude Code pipes to a
-status line command — no hook receives it, and it is not written to the transcript
-files. So the extension installs a small status line script that mirrors the JSON
-to a file and reads it from there.
+**How it works.** The extension runs `claude -p /usage` in the background — the
+same local command as typing `/usage` in a Claude Code session — and reads what it
+prints. Claude Code answers with its own sign-in; the extension never reads or
+handles any credentials.
 
-- Works for Claude.ai Pro/Max subscribers (the data does not exist for API-key
-  usage), and appears after the first response in a session.
-- If you already use a status line, it keeps working — the bridge calls it with
-  the same input and prints its output.
-- `Claude: Disable Real Usage Limits` removes the script and restores your
-  previous status line. `~/.claude/settings.json` is backed up before it is
-  modified.
-- `Claude: Show Usage Limits Bridge Status` reports what is installed and what the
-  last reading contained.
-- Requires `node` on your `PATH`.
+- **No model is called**, so it costs nothing and does not count against your
+  limits. No session is recorded and your hooks are not run.
+- The program is found without any setup: the copy bundled with the **Claude Code
+  VS Code extension** (not on `PATH`, located through VS Code), or the **CLI** —
+  on `PATH` or in the standard install locations.
+- Several VS Code windows share one reading, so Claude Code is started once every
+  two minutes however many windows are open.
+- The output is text meant for people. The parser accepts the formats Claude Code
+  uses and plausible variations (12- and 24-hour clocks, dates with or without a
+  year, relative resets, ISO stamps, "left" instead of "used"). If a future
+  version prints something it cannot read, the panel says so instead of showing
+  empty tiles; the details go to the *Claude Status Bar Debug* output channel.
+- If `/usage` ever stopped being a local command and reached the model, the
+  extension detects the charge on the first call and stops asking that version.
 - If Claude Code signs in with an **API key**, Amazon Bedrock or Google Cloud,
   there are no 5-hour or weekly windows at all — usage is billed per token. The
-  section then says so and points you at the cost figures instead.
-- **The Claude Code VS Code extension renders no status line**, so a session
-  running there feeds the bridge nothing. Keep one terminal session open and the
-  account-wide 5-hour and weekly numbers stay current for all of them — the setup
-  sets `statusLine.refreshInterval`, so an idle terminal still refreshes them
-  every ten seconds. With no terminal session at all the percentages stay at the
-  last reading; the panel dates it and says so rather than passing a frozen number
-  off as current. Everything measured from the transcripts — tokens, cost,
-  messages, and each session's context — works the same either way.
+  section then says so, quoting Claude Code, and points you at the cost figures.
+- `Claude: Show Usage Limits Bridge Status` reports which program was asked, when,
+  and what it answered.
 
-Without the bridge the extension still works — you get accurate token and cost
-figures, just no percentage of your plan.
+**Optional: the status line bridge.** `Claude: Enable Real Usage Limits` installs a
+small status line script that mirrors the numbers Claude Code hands to a status
+line command. It is no longer needed; it only adds second-by-second updates while
+a terminal session is open, and readings from both sources are merged. If you
+already use a status line, it keeps working — the bridge calls it with the same
+input. `Claude: Disable Real Usage Limits` removes the script and restores your
+previous status line.
 
 ## ⚙️ Configuration
 
@@ -167,7 +169,7 @@ plain measured values, because Anthropic does not publish token or message quota
 and there is nothing honest to divide by: real consumption is weighted by model
 and effort level, enforced over a 5-hour window plus weekly windows (Max plans
 have two — all models, and Sonnet only), and the 5-hour limits were doubled in
-May 2026. The real percentages come from the bridge above.
+May 2026. The real percentages come from Claude Code, as described above.
 
 If you want a self-imposed pacing target, set one — the status bar then shows a
 percentage and warning colours against *your* number, and the popup switches that
@@ -213,9 +215,9 @@ code --install-extension claude-statusbar-*.vsix
 Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 - `Claude: Show Usage Details` - Open detailed metrics popup
-- `Claude: Enable Real Usage Limits` - Read the actual 5-hour / weekly usage from Claude Code
+- `Claude: Enable Real Usage Limits` - Optional: add the status line bridge for live terminal updates
 - `Claude: Disable Real Usage Limits` - Remove the bridge, restore your status line
-- `Claude: Show Usage Limits Bridge Status` - Diagnose the bridge in the output channel
+- `Claude: Show Usage Limits Bridge Status` - Diagnose where the usage limits come from
 - `Claude: Set Budgets` - Set your token, cost and message targets
 - `Claude: Refresh Usage Stats` - Force refresh metrics
 
@@ -240,10 +242,9 @@ drops off the list instead of lingering.
 Claude Code uses **5-hour rolling sessions**, plus weekly windows. The extension:
 
 1. Detects your first message timestamp
-2. Calculates session expiry (5 hours later) — or, with the bridge enabled, uses
-   the exact reset timestamp reported by Claude Code, as long as that timestamp is
-   still in the future. Claude Code only refreshes it while it is running, so an
-   expired one falls back to the locally computed window rather than declaring the
+2. Calculates session expiry (5 hours later) — or uses the reset time reported by
+   Claude Code, as long as it is still in the future. A reported reset that has
+   passed falls back to the locally computed window rather than declaring the
    session over
 3. Tracks usage within the active window
 4. Automatically resets when the session expires
@@ -305,14 +306,16 @@ All data processing happens **locally on your machine**:
 - ✅ No telemetry or analytics
 - ✅ No account required
 - ✅ Reads only your local Claude files
+- ✅ Never reads or handles credentials — for the usage limits it runs Claude Code's
+  own `/usage` command, and Claude Code contacts Anthropic with its own sign-in,
+  exactly as when you type `/usage` yourself
 
 ## Requirements
 
 - **VS Code**: 1.104.0 or higher
 - **Claude Code**: an active installation with local conversation data, run from a
   terminal, from the Claude Code VS Code extension, or both
-- **Node.js on `PATH`**: required only for the real usage limits — Claude Code runs
-  the bridge script with it. Everything else works without it.
+- **Node.js on `PATH`**: required only for the optional status line bridge.
 - **Claude.ai Pro or Max**: required for the 5-hour and weekly figures. They do not
   exist for API-key, Amazon Bedrock or Google Cloud sign-ins, where usage is billed
   per token and the cost figures are the relevant ones.

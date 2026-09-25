@@ -5,6 +5,7 @@ import {
   PlanConfig,
   ModelTier,
   RateLimitSnapshot,
+  RateLimitsStatus,
   SessionContextInfo,
 } from './types';
 import { calculateLimitTokens } from './sessionParser';
@@ -124,7 +125,7 @@ export function calculateSessionMetrics(
   planConfig: PlanConfig,
   outputChannel?: vscode.OutputChannel,
   rateLimits?: RateLimitSnapshot,
-  rateLimitsStatus: 'off' | 'waiting' | 'live' = 'off',
+  rateLimitsStatus: RateLimitsStatus = 'off',
   sessionContexts: SessionContextInfo[] = []
 ): SessionMetrics | null {
   if (messages.length === 0) {

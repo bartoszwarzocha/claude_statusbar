@@ -9,9 +9,11 @@ import { parseSessionFileWithMeta } from './sessionParser';
 import { calculateSessionMetrics } from './sessionCalculator';
 import { buildSessionContexts } from './sessionRegistry';
 import { getLiveSessionsDirPath, readLiveSessions } from './liveSessions';
-import { ClaudeMessage, SessionMetrics, PlanConfig, TranscriptMeta } from './types';
+import { ClaudeMessage, SessionMetrics, PlanConfig, RateLimitsStatus, TranscriptMeta } from './types';
+import { findClaudeExecutables, UsageProbeResult, UsageProbeScheduler } from './usageProbe';
 import { getPlanConfig } from './plans';
 import {
+  bridgeLimitsAge,
   checkNodeAvailable,
   getBridgeStatus,
   getClaudeConfigDir,
@@ -21,6 +23,7 @@ import {
   readBridgeContextWindowSize,
   readRateLimits,
   readSessionContexts,
+  recordLimitsReading,
   refreshBridgeScriptIfOutdated,
   getSessionsDirPath,
   uninstallBridge,
@@ -170,7 +173,8 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      // Step 2: Read the authoritative rate limits, if the bridge is feeding us
+      // Step 2: The authoritative rate limits - asked of Claude Code in the
+      // background (see usageProbe.ts), merged with the bridge when it runs
       const rateLimits = readRateLimits();
       // Transcripts list the sessions, the bridge sharpens the ones it can see.
       // Sessions run from the VS Code extension exist only in the former.
@@ -180,12 +184,11 @@ export function activate(context: vscode.ExtensionContext) {
         readBridgeContextWindowSize(),
         readLiveSessions()
       );
-      const bridgeActive = getBridgeStatus().active;
-      const rateLimitsStatus: 'off' | 'waiting' | 'live' = !bridgeActive
-        ? 'off'
-        : rateLimits
-          ? 'live'
-          : 'waiting';
+      const { status: rateLimitsStatus, note: rateLimitsNote } = describeLimits(
+        Boolean(rateLimits),
+        usageProbe,
+        getBridgeStatus().active
+      );
       // Step 3: Calculate metrics (pass output channel for detailed logging)
       outputChannel.appendLine('Calculating session metrics...');
       const metrics = calculateSessionMetrics(
@@ -197,6 +200,9 @@ export function activate(context: vscode.ExtensionContext) {
         rateLimitsStatus,
         sessionContexts
       );
+      if (metrics) {
+        metrics.rateLimitsNote = rateLimitsNote;
+      }
 
       if (metrics && metrics.isActive) {
         outputChannel.appendLine('');
@@ -297,8 +303,34 @@ export function activate(context: vscode.ExtensionContext) {
     },
   });
 
+  /**
+   * The 5-hour and weekly limits, asked of Claude Code itself. Nothing to set
+   * up: the program comes with the Claude Code VS Code extension (and with the
+   * CLI), and it answers with its own sign-in - the extension never sees one.
+   */
+  const usageProbe = new UsageProbeScheduler({
+    findExecutables: () =>
+      findClaudeExecutables(
+        vscode.extensions.all
+          .filter((ext) => ext.id.toLowerCase() === CLAUDE_CODE_EXTENSION_ID)
+          .map((ext) => ext.extensionPath)
+      ),
+    stateFile: path.join(context.globalStorageUri.fsPath, 'usage-probe.json'),
+    // A terminal session feeding the bridge every ten seconds already says it all
+    isRedundant: () => (bridgeLimitsAge() ?? Infinity) < 60_000,
+    log: (line) => outputChannel.appendLine(`[${new Date().toLocaleTimeString()}] ${line}`),
+    onResult: (result: UsageProbeResult) => {
+      if (result.kind === 'limits') {
+        recordLimitsReading(result, result.at);
+      }
+      scheduleUpdate(50);
+    },
+  });
+  context.subscriptions.push(usageProbe);
+
   // Update immediately
   void requestUpdate();
+  usageProbe.start();
 
   // Get refresh interval from settings (1-60 seconds)
   const config = vscode.workspace.getConfiguration('claudeStatusBar');
@@ -512,19 +544,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(id, async () => {
       const choice = await vscode.window.showInformationMessage(
         'Plan presets were removed: they carried token limits Anthropic never published. ' +
-          'Set your own budgets instead, or enable the real usage limits reported by Claude Code.',
-        'Set Budgets',
-        'Enable Real Usage Limits'
+          'The real 5-hour and weekly usage is now read from Claude Code automatically; ' +
+          'budgets remain available as your own pacing targets.',
+        'Set Budgets'
       );
       if (choice === 'Set Budgets') {
         vscode.commands.executeCommand('claude-statusbar.setBudgets');
-      } else if (choice === 'Enable Real Usage Limits') {
-        vscode.commands.executeCommand('claude-statusbar.enableRealLimits');
       }
     })
   );
 
   const refresh = vscode.commands.registerCommand('claude-statusbar.refresh', () => {
+    usageProbe.requestNow();
     void requestUpdate();
   });
 
@@ -590,8 +621,10 @@ export function activate(context: vscode.ExtensionContext) {
         uninstallBridge();
         outputChannel.appendLine('[Bridge] Uninstalled, previous status line restored');
         vscode.window.showInformationMessage(
-          'Real usage limits disabled and the previous Claude Code status line restored.'
+          'Status line bridge removed and the previous Claude Code status line restored. ' +
+            'The usage limits are still read from Claude Code directly.'
         );
+        usageProbe.requestNow();
         void requestUpdate();
       } catch (err) {
         vscode.window.showErrorMessage(`Could not disable real usage limits: ${err}`);
@@ -605,7 +638,17 @@ export function activate(context: vscode.ExtensionContext) {
       const status = getBridgeStatus();
       const snapshot = readRateLimits();
 
+      const probe = usageProbe.result;
       const lines = [
+        `Asking Claude Code (/usage): ${
+          usageProbe.executableMissing
+            ? 'no Claude Code program found'
+            : probe
+              ? `${probe.kind} at ${probe.at.toLocaleString()} via ${probe.executable ?? 'shared result'}`
+              : 'first answer pending'
+        }`,
+        ...(probe?.summary ? [`Claude Code says: ${probe.summary}`] : []),
+        ...(probe?.detail && probe.kind !== 'limits' ? [`Detail: ${probe.detail}`] : []),
         `Claude config dir: ${status.claudeDir}`,
         `Bridge script installed: ${status.installed ? 'yes' : 'no'}`,
         `Wired into settings.json: ${status.active ? 'yes' : 'no'}`,
@@ -673,9 +716,56 @@ export function activate(context: vscode.ExtensionContext) {
     planConfig = loadPlanConfig();
     statusBar.update(currentSession, planConfig);
   });
+}
 
-  // One-time, non-blocking nudge: the real numbers are a command away
-  maybeSuggestBridge(context);
+/** Claude Code's own VS Code extension, which ships a copy of the program */
+const CLAUDE_CODE_EXTENSION_ID = 'anthropic.claude-code';
+
+/**
+ * Put the state of the usage limits into words for the UI. Every state that is
+ * not "live" says why, so an empty tile never leaves the user guessing.
+ */
+function describeLimits(
+  haveLimits: boolean,
+  probe: UsageProbeScheduler,
+  bridgeActive: boolean
+): { status: RateLimitsStatus; note?: string } {
+  if (haveLimits) {
+    return { status: 'live' };
+  }
+  if (probe.isLoading) {
+    return { status: 'loading' };
+  }
+  if (probe.executableMissing) {
+    // Only the bridge is left; it reports nothing until a terminal session runs
+    return bridgeActive ? { status: 'waiting' } : { status: 'off' };
+  }
+
+  const result = probe.result;
+  switch (result?.kind) {
+    case 'no-limits':
+      return { status: 'waiting', note: result.summary };
+    case 'unrecognised':
+      return {
+        status: 'error',
+        note: 'Claude Code answered, but in a format this version of the extension does not recognise.',
+      };
+    case 'charged':
+      return {
+        status: 'error',
+        note:
+          'This version of Claude Code no longer answers /usage locally, so the extension stopped ' +
+          'asking it. The limits will return after a Claude Code update.',
+      };
+    case 'failed':
+      return {
+        status: 'error',
+        note: `Claude Code could not be asked: ${result.detail ?? 'no answer'}`,
+      };
+    default:
+      // A good answer whose windows have since reset - the next one is on its way
+      return { status: 'loading' };
+  }
 }
 
 /** Read whatever statusLine command Claude Code currently uses, if any */
@@ -688,33 +778,6 @@ function readExistingStatusLineCommand(): string | undefined {
     return typeof command === 'string' ? command : undefined;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * Suggest enabling the bridge once. Local token/cost figures are estimates; the
- * real quota percentages only become available through the status line.
- */
-async function maybeSuggestBridge(context: vscode.ExtensionContext) {
-  const SUGGESTED_KEY = 'claudeStatusBar.bridgeSuggested';
-
-  if (context.globalState.get<boolean>(SUGGESTED_KEY)) {
-    return;
-  }
-  if (getBridgeStatus().active) {
-    return;
-  }
-
-  await context.globalState.update(SUGGESTED_KEY, true);
-
-  const choice = await vscode.window.showInformationMessage(
-    'Claude Status Bar can read your real 5-hour and weekly usage limits from Claude Code instead of estimating them.',
-    'Enable',
-    'Not now'
-  );
-
-  if (choice === 'Enable') {
-    vscode.commands.executeCommand('claude-statusbar.enableRealLimits');
   }
 }
 
