@@ -3,13 +3,14 @@ import { SessionMetrics, PlanConfig } from './types';
 import { formatTimeRemaining } from './sessionCalculator';
 import { formatCost } from './pricing';
 import { budgetPercent } from './plans';
+import { clampPercent, displayPercent } from './percentage';
 
 /**
  * Manages the status bar item showing session information.
  *
  * Two display modes:
  *  - Bridge active (real data from Claude Code):
- *      Reset: HH:MM:SS | 5h: 23% | 7d: 41% | C: $12.56
+ *      Reset: HH:MM:SS | Ctx: 42% | 5h: 23% | 7d: 41% | C: $12.56
  *  - Estimates only:
  *      Reset: HH:MM:SS | C: $12.56 | T: 65.5k | M: 255
  *    (with "/budget" and a percentage appended for whichever budgets are set)
@@ -43,6 +44,17 @@ export class StatusBarManager {
 
     const parts: string[] = [`Reset: ${timeRemaining}`];
 
+    const config = vscode.workspace.getConfiguration('claudeStatusBar');
+    const showContext = config.get<boolean>('showContextInStatusBar', false);
+    const showContextAsCircle = config.get<boolean>('showContextAsCircle', false);
+    const contextStatus = showContext
+      ? formatContextStatus(session.sessionContexts, showContextAsCircle)
+      : undefined;
+
+    if (contextStatus && !showContextAsCircle) {
+      parts.push(`Ctx: ${contextStatus}`);
+    }
+
     const fiveHour = session.rateLimits?.fiveHour;
     const sevenDay = session.rateLimits?.sevenDay;
 
@@ -52,10 +64,10 @@ export class StatusBarManager {
     const loading = !fiveHour && !sevenDay && session.rateLimitsStatus === 'loading';
 
     if (fiveHour) {
-      parts.push(`5h: ${fiveHour.usedPercent.toFixed(0)}%`);
+      parts.push(`5h: ${displayPercent(fiveHour.usedPercent).toFixed(0)}%`);
     }
     if (sevenDay) {
-      parts.push(`7d: ${sevenDay.usedPercent.toFixed(0)}%`);
+      parts.push(`7d: ${displayPercent(sevenDay.usedPercent).toFixed(0)}%`);
     }
     if (loading) {
       parts.push('5h: …', '7d: …');
@@ -63,6 +75,7 @@ export class StatusBarManager {
 
     // Cost is always shown - it is computed from real token counts and prices
     const costPercent = budgetPercent(session.totalCost, session.costLimit);
+    const displayedCostPercent = costPercent === undefined ? undefined : displayPercent(costPercent);
     parts.push(
       costPercent === undefined
         ? `C: ${formatCost(session.totalCost)}`
@@ -72,28 +85,34 @@ export class StatusBarManager {
     // Without real rate limit data, fall back to token/message counters
     if (!fiveHour && !sevenDay && !loading) {
       const tokenPercent = budgetPercent(session.totalTokens, planConfig.tokenLimit);
+      const displayedTokenPercent = tokenPercent === undefined ? undefined : displayPercent(tokenPercent);
       parts.push(
         tokenPercent === undefined
           ? `T: ${formatCompact(session.totalTokens)}`
-          : `T: ${tokenPercent.toFixed(1)}%`
+          : `T: ${displayedTokenPercent!.toFixed(1)}%`
       );
 
       const messagePercent = budgetPercent(session.messageCount, session.messageLimit);
+      const displayedMessagePercent = messagePercent === undefined ? undefined : displayPercent(messagePercent);
       parts.push(
         messagePercent === undefined
           ? `M: ${session.messageCount}`
-          : `M: ${messagePercent.toFixed(1)}%`
+          : `M: ${displayedMessagePercent!.toFixed(1)}%`
       );
     }
 
-    this.statusBarItem.text = `$(claude-icon)  ${parts.join(' | ')}`;
+    const icon = showContextAsCircle && contextStatus
+      ? contextStatus
+      : '$(claude-icon)  ';
+    this.statusBarItem.text = `${icon}${parts.join(' | ')}`;
 
-    // Colour on the most reliable signal available: the real 5-hour window,
-    // then the weekly window, then whatever budget the user configured.
+    // Colour on consumed usage, regardless of whether context is displayed as used or available.
+    const contextPercent = session.sessionContexts[0]?.contextPercent;
     const severityPercent = Math.max(
       fiveHour?.usedPercent ?? -1,
       sevenDay?.usedPercent ?? -1,
-      !fiveHour && !sevenDay
+      showContext && contextPercent !== undefined ? clampPercent(contextPercent) : -1,
+      !fiveHour && !sevenDay && (!showContext || contextPercent === undefined)
         ? budgetPercent(session.totalTokens, planConfig.tokenLimit) ?? costPercent ?? -1
         : -1
     );
@@ -116,6 +135,21 @@ export class StatusBarManager {
   public updateTooltip(session: SessionMetrics, planConfig: PlanConfig) {
     const lines: string[] = ['**Claude Code Statistics**', ''];
 
+    const currentContext = session.sessionContexts[0];
+    if (currentContext?.contextPercent !== undefined && Number.isFinite(currentContext.contextPercent)) {
+      const used = displayPercent(currentContext.contextPercent, false);
+      const marker = currentContext.estimated ? '~' : '';
+      lines.push(
+        currentContext.title
+          ? `**Current context** (${currentContext.label})\n- ${currentContext.title}: ${marker}${used.toFixed(1)}% used, ${marker}${(100 - used).toFixed(1)}% remaining`
+          : `**Current context** (${currentContext.label})\n- ${marker}${used.toFixed(1)}% used, ${marker}${(100 - used).toFixed(1)}% available`,
+        currentContext.contextTokens !== undefined && currentContext.contextWindowSize !== undefined
+          ? `- ${currentContext.contextTokens.toLocaleString()} / ${currentContext.contextWindowSize.toLocaleString()} tokens in context`
+          : '',
+        ''
+      );
+    }
+
     const fiveHour = session.rateLimits?.fiveHour;
     const sevenDay = session.rateLimits?.sevenDay;
 
@@ -128,12 +162,12 @@ export class StatusBarManager {
       lines.push(`**Usage limits** _(reported by Claude Code${asOf})_`);
       if (fiveHour) {
         lines.push(
-          `- 5-hour: ${fiveHour.usedPercent.toFixed(1)}% used, resets ${fiveHour.resetsAt.toLocaleTimeString()}`
+          `- 5-hour: ${fiveHour.usedPercent.toFixed(1)}% used, ${(100 - fiveHour.usedPercent).toFixed(1)}% remaining, resets ${fiveHour.resetsAt.toLocaleTimeString()}`
         );
       }
       if (sevenDay) {
         lines.push(
-          `- 7-day: ${sevenDay.usedPercent.toFixed(1)}% used, resets ${sevenDay.resetsAt.toLocaleString()}`
+          `- 7-day: ${sevenDay.usedPercent.toFixed(1)}% used, ${(100 - sevenDay.usedPercent).toFixed(1)}% remaining, resets ${sevenDay.resetsAt.toLocaleString()}`
         );
       }
       if (asOf && session.rateLimitsNote) {
@@ -215,6 +249,23 @@ export class StatusBarManager {
     this.statusBarItem.dispose();
   }
 }
+
+/** Format the newest session context for the status bar. */
+export function formatContextStatus(
+  contexts: SessionMetrics['sessionContexts'],
+  showCircle = false
+): string | undefined {
+  const context = contexts[0];
+  if (!context || context.contextPercent === undefined || !Number.isFinite(context.contextPercent)) {
+    return undefined;
+  }
+
+  const used = displayPercent(context.contextPercent, false);
+  const displayed = displayPercent(context.contextPercent);
+  const circlePercent = Math.round(used / 5) * 5;
+  return showCircle ? `$(claude-context-${circlePercent})` : `${displayed.toFixed(0)}%`;
+}
+
 
 /** Why there are no 5-hour / weekly figures, in one line */
 function limitsStateText(session: SessionMetrics): string {

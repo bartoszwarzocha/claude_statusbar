@@ -27,9 +27,9 @@ Reset: 02:13:20 | C: $31.34 | T: 139.9k | M: 70     API key: no limits exist
 ```
 
 **Status Bar Components:**
+- **Ctx** — context usage for the newest active session; optional and off by default. A `~` marks transcript-derived estimates. Set `showRemainingPercentage` to show remaining percentage instead. This setting also applies to 5h/7d usage and configured token/cost/message budgets. `showContextAsCircle` replaces the Ctx percentage with a circular progress indicator; the ring always shows consumed context and ignores `showRemainingPercentage`.
 - **Reset** — countdown to the session reset (HH:MM:SS)
-- **5h** / **7d** — percentage of the real 5-hour and weekly limits used (see
-  [Real usage limits](#real-usage-limits))
+- **5h** / **7d** — percentage of the real 5-hour and weekly limits used, or remaining when `showRemainingPercentage` is enabled (see [Real usage limits](#real-usage-limits))
 - **C** — session cost, with `/budget` and a percentage if you set one
 - **T** — tokens used (input + output), as a percentage if you set a budget
 - **M** — messages, as a percentage if you set a budget
@@ -51,9 +51,10 @@ Click the status bar to open the statistics panel.
 
 **Session Timer** — countdown to the reset, with the window's start and end times.
 
-**Usage Limits** — three tiles with the real percentage consumed of the context
-window, the 5-hour window and the weekly window, each with its reset time, plus a
-per-session context list. See [Real usage limits](#real-usage-limits).
+**Usage Limits** — three tiles with the real percentage consumed (or remaining
+when `showRemainingPercentage` is enabled) for the context window, the 5-hour
+window and the weekly window, each with its reset time, plus a per-session context
+list. See [Real usage limits](#real-usage-limits).
 
 **Token Usage, Cost Usage, Message Count** — each section shows one bar:
 - a **progress bar** with a percentage, when you have set a budget for that metric
@@ -157,6 +158,9 @@ previous status line.
   "claudeStatusBar.messageBudget": 0,          // your message target; 0 = none
   "claudeStatusBar.refreshInterval": 5,        // 1-60 seconds
   "claudeStatusBar.showProjectName": false,    // project name in the panel header
+  "claudeStatusBar.showContextInStatusBar": false,
+  "claudeStatusBar.showRemainingPercentage": false, // show remaining instead of consumed percentages
+  "claudeStatusBar.showContextAsCircle": false,
   "claudeStatusBar.notifications.sessionEnded": true
 }
 ```

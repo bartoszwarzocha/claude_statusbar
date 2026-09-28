@@ -3,6 +3,7 @@ import { SessionMetrics, PlanConfig, RateLimitWindow, SessionContextInfo } from 
 import { formatTimeRemaining, getStatusColor } from './sessionCalculator';
 import { formatCost } from './pricing';
 import { budgetPercent } from './plans';
+import { displayPercent } from './percentage';
 
 /**
  * Render "23.5%", or nothing at all when there is no budget to measure against.
@@ -10,7 +11,7 @@ import { budgetPercent } from './plans';
  * never fill just adds noise.
  */
 function formatPercent(percent: number | undefined): string {
-  return percent === undefined ? '' : `${percent.toFixed(1)}%`;
+  return percent === undefined ? '' : `${displayPercent(percent).toFixed(1)}%`;
 }
 
 /**
@@ -212,9 +213,11 @@ function renderLimitTile(
   approximate = false
 ): string {
   const known = percent !== undefined;
-  const color = known ? getStatusColor(percent) : 'var(--vscode-descriptionForeground)';
-  const value = known ? `${approximate ? '~' : ''}${Math.round(percent)}%` : '—';
-  const width = known ? Math.min(percent, 100) : 0;
+  const usedPercent = known ? Math.max(0, Math.min(percent, 100)) : 0;
+  const display = displayPercent(usedPercent);
+  const color = known ? getStatusColor(usedPercent) : 'var(--vscode-descriptionForeground)';
+  const value = known ? `${approximate ? '~' : ''}${Math.round(display)}%` : '—';
+  const width = known ? display : 0;
 
   return `
             <div class="limit-tile">
@@ -270,13 +273,14 @@ function renderSessionContexts(session: SessionMetrics): string {
   const items = rows
     .map((row) => {
       const known = typeof row.contextPercent === 'number';
-      const percent = known ? Math.min(row.contextPercent as number, 100) : 0;
-      const color = known ? getStatusColor(row.contextPercent as number) : 'transparent';
+      const usedPercent = known ? Math.max(0, Math.min(row.contextPercent as number, 100)) : 0;
+      const percent = displayPercent(usedPercent);
+      const color = known ? getStatusColor(usedPercent) : 'transparent';
       const rowId = `sess-${row.sessionId.replace(/[^\w-]/g, '')}`;
       return `
             <div class="session-row">
                 <div class="session-row-head">
-                    <span class="session-row-name" title="${escapeHtml(sessionTooltip(row))}">${escapeHtml(row.label)}</span>
+                    <span class="session-row-name" id="${rowId}-name" title="${escapeHtml(sessionTooltip(row))}">${escapeHtml(sessionDisplayName(row))}</span>
                     <span class="session-row-meta" id="${rowId}-meta">${percentLabel(row)} · ${ageLabel(row.updatedAt)}</span>
                 </div>
                 <div class="session-row-bar"><div class="session-row-fill" id="${rowId}-fill" style="width: ${percent}%; background-color: ${color};"></div></div>
@@ -291,12 +295,19 @@ function renderSessionContexts(session: SessionMetrics): string {
         </div>`;
 }
 
+/** Label plus conversation title for the per-session context list. */
+function sessionDisplayName(row: SessionContextInfo): string {
+  return row.title ? `${row.label} — ${row.title}` : row.label;
+}
+
 /** "47%" / "~47%" / "—" */
 function percentLabel(row: SessionContextInfo): string {
   if (typeof row.contextPercent !== 'number') {
     return '—';
   }
-  return `${row.estimated ? '~' : ''}${Math.round(row.contextPercent)}%`;
+  const used = Math.max(0, Math.min(row.contextPercent, 100));
+  const percent = displayPercent(used);
+  return `${row.estimated ? '~' : ''}${Math.round(percent)}%`;
 }
 
 /** Hover text: the conversation title, plus why a value is only an estimate */
@@ -615,6 +626,7 @@ export class SessionPopupPanel {
    */
   private layoutKey(session: SessionMetrics, planConfig: PlanConfig): string {
     const status = session.rateLimitsStatus;
+    const showRemainingPercentage = vscode.workspace.getConfiguration('claudeStatusBar').get<boolean>('showRemainingPercentage', false);
     const hasAnyWindow = Boolean(session.rateLimits?.fiveHour || session.rateLimits?.sevenDay);
     // Whether each metric renders a progress bar or a composition bar is baked
     // into the markup, so a budget appearing or disappearing needs a re-render.
@@ -631,7 +643,7 @@ export class SessionPopupPanel {
     // markup, not values, so they cannot change through postMessage.
     const updatedAt = session.rateLimits?.updatedAt;
     const stale = Boolean(updatedAt && Date.now() - updatedAt.getTime() >= STALE_THRESHOLD_MS);
-    return `${status}|${hasAnyWindow}|${budgets}|${sessions}|${stale}|${session.rateLimitsNote ?? ''}`;
+    return `${status}|${hasAnyWindow}|${budgets}|${sessions}|${stale}|${showRemainingPercentage}|${session.rateLimitsNote ?? ''}`;
   }
 
   /**
@@ -672,6 +684,7 @@ export class SessionPopupPanel {
     const costPercent = budgetPercent(session.totalCost, session.costLimit);
     const messagePercent = budgetPercent(session.messageCount, session.messageLimit);
 
+    const showRemainingPercentage = vscode.workspace.getConfiguration('claudeStatusBar').get<boolean>('showRemainingPercentage', false);
     const tokenColor = getStatusColor(tokenPercent ?? 0);
     const costColor = getStatusColor(costPercent ?? 0);
     const messageColor = getStatusColor(messagePercent ?? 0);
@@ -1320,7 +1333,8 @@ export class SessionPopupPanel {
                     : '<strong>' + current + '</strong>' + unitStr;
             }
             // No budget -> no percentage and no bar, rather than an empty track
-            const percentStr = percent === null ? '' : percent.toFixed(1) + '%';
+            const display = percent === null ? null : displayPercent(percent);
+            const percentStr = display === null ? '' : display.toFixed(1) + '%';
             if (percentElem) {
                 percentElem.innerHTML = percentStr ? '<strong>' + percentStr + '</strong>' : '';
             }
@@ -1333,7 +1347,7 @@ export class SessionPopupPanel {
                 containerElem.classList.toggle('no-bar', percent === null);
             }
             if (fillElem) {
-                fillElem.style.width = Math.min(percent === null ? 0 : percent, 100) + '%';
+                fillElem.style.width = Math.min(display ?? 0, 100) + '%';
             }
             if (textElem) {
                 textElem.textContent = percentStr;
@@ -1413,6 +1427,13 @@ export class SessionPopupPanel {
             return pct >= 80 ? '#ff6b6b' : pct >= 60 ? '#ffd93d' : '#51cf66';
         }
 
+        const showRemainingPercentage = ${showRemainingPercentage};
+
+        function displayPercent(usedPercent) {
+            const used = Math.max(0, Math.min(usedPercent, 100));
+            return showRemainingPercentage ? 100 - used : used;
+        }
+
         // Update one tile. A null/undefined percent means "not reported": the tile
         // stays in place showing a dash so the grid keeps its three columns.
         function updateLimitTile(id, percent, sub, approximate) {
@@ -1422,16 +1443,18 @@ export class SessionPopupPanel {
             if (!valueElem || !fillElem) { return; }
 
             const known = typeof percent === 'number';
-            const color = known ? limitColor(percent) : 'var(--vscode-descriptionForeground)';
+            const usedPercent = known ? Math.max(0, Math.min(percent, 100)) : 0;
+            const display = displayPercent(usedPercent);
+            const color = known ? limitColor(usedPercent) : 'var(--vscode-descriptionForeground)';
 
-            valueElem.textContent = known ? (approximate ? '~' : '') + Math.round(percent) + '%' : '—';
+            valueElem.textContent = known ? (approximate ? '~' : '') + Math.round(display) + '%' : '—';
             valueElem.style.color = color;
-            fillElem.style.width = (known ? Math.min(percent, 100) : 0) + '%';
+            fillElem.style.width = display + '%';
             fillElem.style.backgroundColor = known ? color : 'transparent';
             if (subElem && sub) { subElem.textContent = sub; }
         }
 
-        function resetCaption(window, withDate) {
+                function resetCaption(window, withDate) {
             if (!window) { return 'not reported'; }
             const d = new Date(window.resetsAt);
             const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1445,6 +1468,21 @@ export class SessionPopupPanel {
             return Math.floor(minutes / 60) + ' h ago';
         }
 
+        function sessionDisplayName(row) {
+            return row.title ? row.label + ' — ' + row.title : row.label;
+        }
+
+        function sessionTooltip(row) {
+            const parts = [row.title || row.sessionId];
+            if (row.entrypoint === 'claude-vscode') {
+                parts.push('Running in the VS Code extension, which reports no usage to the bridge.');
+            }
+            if (row.estimated) {
+                parts.push('Context estimated from the transcript.');
+            }
+            return parts.join(' — ');
+        }
+
         // Per-session context rows. The DOM order is fixed by the last render;
         // only values move, so a session overtaking another does not reshuffle
         // the list under the cursor.
@@ -1455,12 +1493,15 @@ export class SessionPopupPanel {
                 const known = typeof row.contextPercent === 'number';
                 const meta = document.getElementById(id + '-meta');
                 if (meta) {
+                    const name = document.getElementById(id + '-name');
+                    if (name) { name.textContent = sessionDisplayName(row); name.title = sessionTooltip(row); }
                     meta.textContent = percentLabel(row) + ' · ' + ageLabel(row.updatedAt);
                 }
                 const fill = document.getElementById(id + '-fill');
                 if (fill) {
-                    fill.style.width = (known ? Math.min(row.contextPercent, 100) : 0) + '%';
-                    fill.style.backgroundColor = known ? limitColor(row.contextPercent) : 'transparent';
+                    const used = known ? Math.max(0, Math.min(row.contextPercent, 100)) : 0;
+                    fill.style.width = displayPercent(used) + '%';
+                    fill.style.backgroundColor = known ? limitColor(used) : 'transparent';
                 }
             }
         }
@@ -1476,7 +1517,9 @@ export class SessionPopupPanel {
 
         function percentLabel(row) {
             if (typeof row.contextPercent !== 'number') { return '—'; }
-            return (row.estimated ? '~' : '') + Math.round(row.contextPercent) + '%';
+            const used = Math.max(0, Math.min(row.contextPercent, 100));
+            const percent = displayPercent(used);
+            return (row.estimated ? '~' : '') + Math.round(percent) + '%';
         }
 
         function contextCaption(rows, index) {
@@ -1509,9 +1552,9 @@ export class SessionPopupPanel {
             renderContextTile();
             if (!rateLimits) { return; }
             updateLimitTile('five-hour', rateLimits.fiveHour && rateLimits.fiveHour.usedPercent,
-                resetCaption(rateLimits.fiveHour, false));
+                resetCaption(rateLimits.fiveHour, false), false);
             updateLimitTile('seven-day', rateLimits.sevenDay && rateLimits.sevenDay.usedPercent,
-                resetCaption(rateLimits.sevenDay, true));
+                resetCaption(rateLimits.sevenDay, true), false);
         }
 
         // Generate color from string hash (for projects)
@@ -1748,7 +1791,7 @@ ${limitsSection}
                 <span id="token-percent"><strong>${formatPercent(tokenPercent)}</strong></span>
             </div>
             <div class="progress-bar" id="token-bar"${barVisibility(tokenPercent)}>
-                <div class="progress-fill" id="token-fill" style="width: ${Math.min(tokenPercent ?? 0, 100)}%; background-color: ${tokenColor};">
+                <div class="progress-fill" id="token-fill" style="width: ${(tokenPercent === undefined ? 0 : displayPercent(tokenPercent))}%; background-color: ${tokenColor};">
                     <span id="token-fill-text">${formatPercent(tokenPercent)}</span>
                 </div>
             </div>${tokenPercent === undefined ? renderCompositionBar('token', tokenSegments(session)) : ''}
@@ -1800,7 +1843,7 @@ ${limitsSection}
                 <span id="cost-percent"><strong>${formatPercent(costPercent)}</strong></span>
             </div>
             <div class="progress-bar" id="cost-bar"${barVisibility(costPercent)}>
-                <div class="progress-fill" id="cost-fill" style="width: ${Math.min(costPercent ?? 0, 100)}%; background-color: ${costColor};">
+                <div class="progress-fill" id="cost-fill" style="width: ${(costPercent === undefined ? 0 : displayPercent(costPercent))}%; background-color: ${costColor};">
                     <span id="cost-fill-text">${formatPercent(costPercent)}</span>
                 </div>
             </div>${costPercent === undefined ? renderCompositionBar('cost', costSegments(session)) : ''}
@@ -1832,7 +1875,7 @@ ${limitsSection}
                 <span id="message-percent"><strong>${formatPercent(messagePercent)}</strong></span>
             </div>
             <div class="progress-bar" id="message-bar"${barVisibility(messagePercent)}>
-                <div class="progress-fill" id="message-fill" style="width: ${Math.min(messagePercent ?? 0, 100)}%; background-color: ${messageColor};">
+                <div class="progress-fill" id="message-fill" style="width: ${(messagePercent === undefined ? 0 : displayPercent(messagePercent))}%; background-color: ${messageColor};">
                     <span id="message-fill-text">${formatPercent(messagePercent)}</span>
                 </div>
             </div>${messagePercent === undefined ? renderCompositionBar('message', messageSegments(session)) : ''}
